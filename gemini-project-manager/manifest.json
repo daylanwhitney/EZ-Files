@@ -1,0 +1,32 @@
+{
+    "manifest_version": 3,
+    "name": "Gemini Project Manager",
+    "version": "1.0.0",
+    "description": "Organize your Google Gemini chats into nested folders and projects.",
+    "permissions": [
+        "storage",
+        "tabs",
+        "scripting"
+    ],
+    "host_permissions": [
+        "https://gemini.google.com/*"
+    ],
+    "action": {
+        "default_title": "Gemini Project Manager"
+    },
+    "background": {
+        "service_worker": "src/background/service-worker.ts",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://gemini.google.com/*"
+            ],
+            "js": [
+                "src/content/index.tsx"
+            ],
+            "run_at": "document_end"
+        }
+    ]
+}
