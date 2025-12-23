@@ -75,19 +75,11 @@ function createSidebarButton(isFallback = false) {
     return button;
 }
 
+import { deepQuerySelectorAll, getParents } from '../utils/dom';
+
 // Keep track of retry attempts to trigger fallback
 let retryCount = 0;
 const MAX_RETRIES = 20; // 20 attempts * 500ms debounce ~= 10 seconds before fallback
-
-function getParents(element: HTMLElement): HTMLElement[] {
-    const parents = [];
-    let current = element.parentElement;
-    while (current) {
-        parents.push(current);
-        current = current.parentElement;
-    }
-    return parents;
-}
 
 // Helper to find the sidebar container
 // Helper to find the sidebar container
@@ -133,38 +125,6 @@ function findSidebarContainer(): HTMLElement | null {
 
     return targetContainer;
 }
-
-// Helper to find all elements matching a selector, piercing Shadow DOM
-function deepQuerySelectorAll(root: Node, selector: string): HTMLElement[] {
-    let results: HTMLElement[] = [];
-
-    if (root.nodeType === Node.ELEMENT_NODE) {
-        const el = root as HTMLElement;
-        if (el.matches && el.matches(selector)) {
-            results.push(el);
-        }
-
-        if (el.shadowRoot) {
-            results = results.concat(deepQuerySelectorAll(el.shadowRoot, selector));
-        }
-    }
-
-    if (root.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
-        const fragment = root as DocumentFragment;
-        for (let i = 0; i < fragment.children.length; i++) {
-            results = results.concat(deepQuerySelectorAll(fragment.children[i], selector));
-        }
-    }
-
-    if (root.childNodes) {
-        for (let i = 0; i < root.childNodes.length; i++) {
-            results = results.concat(deepQuerySelectorAll(root.childNodes[i], selector));
-        }
-    }
-
-    return results;
-}
-
 function findAndInjectButton() {
     // Check if we already injected
     if (document.querySelector('.ez-projects-btn')) return;
@@ -417,7 +377,7 @@ function makeChatsDraggable() {
                         el.querySelector('[data-test-id]')?.getAttribute('data-test-id') ||
                         el.querySelector('[data-testid]')?.getAttribute('data-testid');
                     // Only use testId if it looks like a real unique ID (alphanumeric, 8+ chars, not generic words)
-                    if (testId && !testId.includes('new-chat') && testId.length >= 8 && 
+                    if (testId && !testId.includes('new-chat') && testId.length >= 8 &&
                         !['conversation', 'chat', 'item', 'row', 'container'].includes(testId.toLowerCase())) {
                         id = testId.replace(/^conversation-/, '');
                     }
@@ -443,7 +403,7 @@ function makeChatsDraggable() {
                 if (id && !url) {
                     url = `${window.location.origin}/app/${id}`;
                 }
-                
+
                 // Ensure we have a UNIQUE ID – generate one based on title hash if missing
                 // This ensures each chat with a different title gets a different ID
                 if (!id) {

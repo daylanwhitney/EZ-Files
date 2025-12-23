@@ -3,6 +3,7 @@ import { Folder as FolderIcon, Trash2, ChevronRight, ChevronDown, Plus, Pencil }
 import { useProjects } from '../hooks/useProjects';
 import type { Folder, StorageData } from '../types';
 import { storage } from '../utils/storage';
+import { findChatElement } from '../utils/dom';
 
 export default function ProjectList() {
     const { folders, loading, addFolder, deleteFolder, addChatToFolder, refresh } = useProjects();
@@ -308,7 +309,18 @@ function ChatItem({ chatId, onRemove }: { chatId: string; onRemove: () => void }
 
         if (!chat || !chat.url) return;
 
-        // "Proxy Click" Strategy:
+        // Strategy 1: "Direct Click" - Try to find the actual sidebar element and click it
+        // This is the most robust way to trigger SPA navigation without reloading
+        const sidebarEl = findChatElement(chatId, chat.title);
+        if (sidebarEl) {
+            console.log("Gemini Project Manager: Clicking sidebar element for chat", chatId);
+            sidebarEl.click();
+            return;
+        }
+
+        console.warn("Gemini Project Manager: Sidebar element not found, using Proxy Click fallback");
+
+        // Strategy 2: "Proxy Click"
         // Events inside Shadow DOM might not bubble correctly to the app's router listener.
         // We create a temporary link in the MAIN document and click it.
         const link = document.createElement('a');
