@@ -279,9 +279,8 @@ function makeChatsDraggable() {
 
     const chatElements: HTMLElement[] = [];
 
-    // STRATEGY 1: Target the conversation row containers
-    // These are the main clickable/hoverable rows in the sidebar
-    // Look for elements with class containing "conversation-item" (the row wrapper)
+    // STRATEGY 1: Target the conversation row containers (ORIGINAL - this works)
+    // Look for elements with class containing "conversation-item" but exclude containers and actions
     const conversationRows = document.querySelectorAll('[class*="conversation-item"]:not([class*="conversation-actions"])');
 
     conversationRows.forEach((row) => {
@@ -390,32 +389,48 @@ function makeChatsDraggable() {
                 let id: string | null = null;
                 let url = "";
 
-                // Method 1: Direct anchor link
-                const anchor = el.querySelector('a[href*="/app/"]') ||
-                    (el instanceof HTMLAnchorElement && el.href.includes('/app/') ? el : null);
-                if (anchor) {
-                    url = (anchor as HTMLAnchorElement).href;
-                    const idMatch = url.match(/\/app\/([a-zA-Z0-9_-]+)/);
-                    id = idMatch ? idMatch[1] : null;
+                // Method 1: Check if the element itself is an anchor with /app/ URL
+                if (el instanceof HTMLAnchorElement && el.href.includes('/app/')) {
+                    url = el.href;
+                    const idMatch = url.match(/\/app\/([a-zA-Z0-9_-]{8,})/);
+                    if (idMatch) {
+                        id = idMatch[1];
+                    }
                 }
 
-                // Method 2: data-test-id or data-testid attributes
+                // Method 1b: Look for anchor child with /app/ URL
+                if (!id) {
+                    const anchor = el.querySelector('a[href*="/app/"]') as HTMLAnchorElement;
+                    if (anchor) {
+                        url = anchor.href;
+                        const idMatch = url.match(/\/app\/([a-zA-Z0-9_-]{8,})/);
+                        if (idMatch) {
+                            id = idMatch[1];
+                        }
+                    }
+                }
+
+                // Method 2: data-test-id or data-testid attributes (but only if they look like real IDs, not generic names)
                 if (!id) {
                     const testId = el.getAttribute('data-test-id') ||
                         el.getAttribute('data-testid') ||
                         el.querySelector('[data-test-id]')?.getAttribute('data-test-id') ||
                         el.querySelector('[data-testid]')?.getAttribute('data-testid');
-                    if (testId && !testId.includes('new-chat')) {
+                    // Only use testId if it looks like a real unique ID (alphanumeric, 8+ chars, not generic words)
+                    if (testId && !testId.includes('new-chat') && testId.length >= 8 && 
+                        !['conversation', 'chat', 'item', 'row', 'container'].includes(testId.toLowerCase())) {
                         id = testId.replace(/^conversation-/, '');
                     }
                 }
 
-                // Method 3: Look for conversation ID in any data-* attribute
+                // Method 3: Look for conversation ID in any data-* attribute (but must be 8+ chars to be a real ID)
                 if (!id) {
-                    const allDataAttrs = el.getAttributeNames().filter(n => n.startsWith('data-'));
+                    const allDataAttrs = el.getAttributeNames().filter(n => n.startsWith('data-') && n !== 'data-ez-draggable');
                     for (const attr of allDataAttrs) {
                         const val = el.getAttribute(attr) || '';
-                        if (val.length > 5 && val.length < 50 && /^[a-zA-Z0-9_-]+$/.test(val)) {
+                        // Must be 8+ chars, alphanumeric, and not a generic word
+                        if (val.length >= 8 && val.length < 50 && /^[a-zA-Z0-9_-]+$/.test(val) &&
+                            !['conversation', 'chat', 'item', 'row', 'container', 'true', 'false'].includes(val.toLowerCase())) {
                             id = val;
                             break;
                         }
@@ -428,9 +443,13 @@ function makeChatsDraggable() {
                 if (id && !url) {
                     url = `${window.location.origin}/app/${id}`;
                 }
-                // Ensure we have an ID – generate a UUID if missing
+                
+                // Ensure we have a UNIQUE ID – generate one based on title hash if missing
+                // This ensures each chat with a different title gets a different ID
                 if (!id) {
-                    id = crypto.randomUUID();
+                    // Generate a deterministic ID from the title so same chat always gets same ID
+                    const titleHash = generateTitleHash(title);
+                    id = `chat_${titleHash}`;
                     if (!url) {
                         url = `${window.location.origin}/app/${id}`;
                     }
@@ -473,11 +492,12 @@ function makeChatsDraggable() {
     return chatElements.length;
 }
 
-// Simple hash function for generating fallback IDs
-function simpleHash(str: string): string {
+// Generate a deterministic hash from a string (for creating unique IDs from titles)
+function generateTitleHash(str: string): string {
     let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
+    const normalizedStr = str.toLowerCase().trim();
+    for (let i = 0; i < normalizedStr.length; i++) {
+        const char = normalizedStr.charCodeAt(i);
         hash = ((hash << 5) - hash) + char;
         hash = hash & hash; // Convert to 32bit integer
     }

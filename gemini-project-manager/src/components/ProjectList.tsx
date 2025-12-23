@@ -130,7 +130,6 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
             return;
         }
 
-        // console.log("Gemini Project Manager: Drag Leave", folder.name);
         setIsDragOver(false);
 
         if (expandTimerRef.current) {
@@ -154,7 +153,6 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
         try {
             const json = e.dataTransfer.getData('application/json');
             console.log("Gemini Project Manager: Drop data (JSON) length:", json?.length);
-            // console.log("Gemini Project Manager: Drop data content:", json);
 
             if (json) {
                 const data = JSON.parse(json);
