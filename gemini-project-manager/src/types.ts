@@ -5,8 +5,15 @@ export interface Chat {
     timestamp: number;
 }
 
+export interface Workspace {
+    id: string;
+    name: string;
+    order: number;
+}
+
 export interface Folder {
     id: string;
+    workspaceId: string; // NEW: Links folder to a workspace
     name: string;
     color?: string;
     parentId: string | null; // For nesting
@@ -15,6 +22,8 @@ export interface Folder {
 }
 
 export interface StorageData {
+    workspaces: Workspace[];      // List of available workspaces
+    activeWorkspaceId: string;    // Which one is currently open
     folders: Folder[];
     chats: Record<string, Chat>; // Map for quick lookup
     settings: {

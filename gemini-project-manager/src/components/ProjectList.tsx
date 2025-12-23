@@ -13,7 +13,7 @@ function cn(...inputs: (string | undefined | null | false)[]) {
 }
 
 export default function ProjectList() {
-    const { folders, chats, loading, addFolder, deleteFolder, addChatToFolder, refresh } = useProjects();
+    const { folders, chats, activeWorkspaceId, loading, addFolder, deleteFolder, addChatToFolder, refresh } = useProjects();
     const [newFolderName, setNewFolderName] = useState('');
     const [isCreating, setIsCreating] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
@@ -56,11 +56,12 @@ export default function ProjectList() {
     };
 
     // --- Search & Filtering Logic ---
-    let filteredFolders: (Folder & { _forceExpand?: boolean })[] = folders;
+    const workspaceFolders = folders.filter(f => f.workspaceId === activeWorkspaceId);
+    let filteredFolders: (Folder & { _forceExpand?: boolean })[] = workspaceFolders;
 
     // Only filter if there is a search query
     if (searchQuery.trim()) {
-        filteredFolders = folders.map(folder => {
+        filteredFolders = workspaceFolders.map(folder => {
             // 1. If folder name matches search, keep it and show all its chats
             if (folder.name.toLowerCase().includes(searchQuery.toLowerCase())) {
                 return { ...folder, _forceExpand: true };

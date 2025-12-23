@@ -1,25 +1,28 @@
 import { useState, useEffect } from 'react';
 import { storage } from '../utils/storage';
-import type { Folder, Chat } from '../types';
+import type { Folder, Chat, Workspace } from '../types';
 
 export function useProjects() {
     const [folders, setFolders] = useState<Folder[]>([]);
-    const [chats, setChats] = useState<Record<string, Chat>>({}); // NEW: Expose chats
+    const [chats, setChats] = useState<Record<string, Chat>>({});
+    const [workspaces, setWorkspaces] = useState<Workspace[]>([]); // NEW
+    const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(''); // NEW
     const [loading, setLoading] = useState(true);
 
     const refresh = async () => {
         const data = await storage.get();
         setFolders(data.folders);
-        setChats(data.chats || {}); // NEW
+        setChats(data.chats || {});
+        setWorkspaces(data.workspaces || []);
+        setActiveWorkspaceId(data.activeWorkspaceId || '');
         setLoading(false);
     };
 
     useEffect(() => {
         refresh();
-
-        // Optional: Listen for storage changes if multiple tabs open
         const listener = (changes: { [key: string]: chrome.storage.StorageChange }) => {
-            if (changes.folders || changes.chats) {
+            // Refresh on any relevant change
+            if (changes.folders || changes.chats || changes.workspaces || changes.activeWorkspaceId) {
                 refresh();
             }
         };
@@ -28,8 +31,11 @@ export function useProjects() {
     }, []);
 
     const addFolder = async (name: string) => {
-        await storage.addFolder(name);
-        refresh();
+        // Use current active ID
+        if (activeWorkspaceId) {
+            await storage.addFolder(name, activeWorkspaceId);
+            refresh();
+        }
     };
 
     const deleteFolder = async (id: string) => {
@@ -42,11 +48,42 @@ export function useProjects() {
         refresh();
     };
 
-    // NEW: Wrapper for import to trigger refresh
     const importData = async (json: string) => {
         const success = await storage.importData(json);
         if (success) refresh();
-    }
+    };
 
-    return { folders, chats, loading, addFolder, deleteFolder, addChatToFolder, refresh, importData };
+    // --- NEW WORKSPACE ACTIONS ---
+    const addWorkspace = async (name: string) => {
+        await storage.addWorkspace(name);
+        refresh();
+    };
+
+    const deleteWorkspace = async (id: string) => {
+        await storage.deleteWorkspace(id);
+        refresh();
+    };
+
+    const setActiveWorkspace = async (id: string) => {
+        await storage.setActiveWorkspace(id);
+        // Optimistic update
+        setActiveWorkspaceId(id);
+        refresh();
+    };
+
+    return {
+        folders,
+        chats,
+        workspaces,
+        activeWorkspaceId,
+        loading,
+        addFolder,
+        deleteFolder,
+        addChatToFolder,
+        refresh,
+        importData,
+        addWorkspace,
+        deleteWorkspace,
+        setActiveWorkspace
+    };
 }
