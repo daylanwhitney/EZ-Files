@@ -6,6 +6,28 @@ const DEFAULT_DATA: StorageData = {
     settings: { theme: 'dark' },
 };
 
+// Storage mutex to prevent race conditions
+// Multiple rapid get→modify→save cycles can cause data loss if not serialized
+let storageLock: Promise<void> = Promise.resolve();
+
+// Wrapper to serialize storage operations
+async function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
+    // Wait for previous operation to complete
+    const previousLock = storageLock;
+
+    let releaseLock: () => void = () => { };
+    storageLock = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+    });
+
+    try {
+        await previousLock; // Wait for previous operation
+        return await fn();  // Execute our operation
+    } finally {
+        releaseLock(); // Release lock for next operation
+    }
+}
+
 export const storage = {
     get: async (): Promise<StorageData> => {
         const result = await chrome.storage.local.get(null);
@@ -42,25 +64,38 @@ export const storage = {
     },
 
     addChatToFolder: async (chat: Chat, folderId: string) => {
-        const data = await storage.get();
+        return withStorageLock(async () => {
+            console.log(`Gemini Project Manager: Storage.addChatToFolder called for chat "${chat.title}" (${chat.id}) to folder ${folderId}`);
 
-        // Save chat metadata if not exists or update it
-        const updatedChats = { ...data.chats, [chat.id]: chat };
+            const data = await storage.get();
+            const folderIndex = data.folders.findIndex(f => f.id === folderId);
 
-        // Add ref to folder
-        const folderIndex = data.folders.findIndex(f => f.id === folderId);
-        if (folderIndex === -1) return;
+            if (folderIndex === -1) {
+                console.error(`Gemini Project Manager: Folder ${folderId} NOT FOUND inside storage.get()`);
+                return;
+            }
 
-        const folder = data.folders[folderIndex];
-        if (!folder.chatIds.includes(chat.id)) {
-            const updatedFolder = { ...folder, chatIds: [...folder.chatIds, chat.id] };
-            const updatedFolders = [...data.folders];
-            updatedFolders[folderIndex] = updatedFolder;
-            await storage.save({ folders: updatedFolders, chats: updatedChats });
-        } else {
-            // Just update chat metadata
-            await storage.save({ chats: updatedChats });
-        }
+            const folder = data.folders[folderIndex];
+            console.log(`Gemini Project Manager: Found folder "${folder.name}". Current chats: [${folder.chatIds.join(', ')}]`);
+
+            // Save chat metadata if not exists or update it
+            const updatedChats = { ...data.chats, [chat.id]: chat };
+
+            // Check if chat is already in folder
+            if (!folder.chatIds.includes(chat.id)) {
+                console.log(`Gemini Project Manager: Chat ${chat.id} is NEW to this folder. Adding...`);
+
+                const updatedFolder = { ...folder, chatIds: [...folder.chatIds, chat.id] };
+                const updatedFolders = [...data.folders];
+                updatedFolders[folderIndex] = updatedFolder;
+
+                await storage.save({ folders: updatedFolders, chats: updatedChats });
+                console.log(`Gemini Project Manager: Save complete. New chat count: ${updatedFolder.chatIds.length}`);
+            } else {
+                console.warn(`Gemini Project Manager: Chat ${chat.id} ALREADY EXISTS in folder. Updating metadata only.`);
+                await storage.save({ chats: updatedChats });
+            }
+        });
     },
 
     removeChatFromFolder: async (chatId: string, folderId: string) => {

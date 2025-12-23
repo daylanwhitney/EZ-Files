@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Folder as FolderIcon, Trash2, ChevronRight, ChevronDown, Plus, Pencil } from 'lucide-react';
 import { useProjects } from '../hooks/useProjects';
 import type { Folder, StorageData } from '../types';
@@ -81,6 +81,8 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
     const [isExpanded, setIsExpanded] = useState(!folder.collapsed);
     const [isEditing, setIsEditing] = useState(false);
     const [editName, setEditName] = useState(folder.name);
+    const [isDragOver, setIsDragOver] = useState(false);
+    const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const handleSaveResize = async () => {
         if (!editName.trim()) return;
@@ -98,9 +100,108 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
         }
     };
 
+    // --- Drag and Drop Handlers ---
+
+    const handleDragOver = (e: React.DragEvent) => {
+        e.preventDefault(); // Client must allow drop
+        e.stopPropagation();
+
+        if (!isDragOver) {
+            console.log("Gemini Project Manager: Drag Enter/Over detected on folder", folder.name);
+            setIsDragOver(true);
+        }
+
+        // Auto-expand logic
+        if (!isExpanded && !expandTimerRef.current) {
+            expandTimerRef.current = setTimeout(() => {
+                console.log("Gemini Project Manager: Auto-expanding folder", folder.name);
+                setIsExpanded(true);
+            }, 600);
+        }
+    };
+
+    const handleDragLeave = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Fix: Only set isDragOver false if we are actually leaving the container,
+        // not just entering a child element.
+        if (e.currentTarget.contains(e.relatedTarget as Node)) {
+            return;
+        }
+
+        // console.log("Gemini Project Manager: Drag Leave", folder.name);
+        setIsDragOver(false);
+
+        if (expandTimerRef.current) {
+            clearTimeout(expandTimerRef.current);
+            expandTimerRef.current = null;
+        }
+    };
+
+    const handleDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log("Gemini Project Manager: Drop detected on folder", folder.name);
+
+        setIsDragOver(false);
+
+        if (expandTimerRef.current) {
+            clearTimeout(expandTimerRef.current);
+            expandTimerRef.current = null;
+        }
+
+        try {
+            const json = e.dataTransfer.getData('application/json');
+            console.log("Gemini Project Manager: Drop data (JSON) length:", json?.length);
+            // console.log("Gemini Project Manager: Drop data content:", json);
+
+            if (json) {
+                const data = JSON.parse(json);
+                console.log(`Gemini Project Manager: Parsed drop data: ID="${data.id}", Title="${data.title}"`);
+
+                if (data.id && data.title) {
+                    onAddChat(folder.id, data);
+                } else {
+                    console.error("Gemini Project Manager: Missing ID or Title in drop data", data);
+                }
+            } else {
+                // Fallback for simple link drags if someone drags a link NOT via our script
+                const url = e.dataTransfer.getData('text/plain');
+                console.log("Gemini Project Manager: Drop fallback URL:", url);
+
+                if (url && url.includes('/app/')) {
+                    const idMatch = url.match(/\/app\/([a-zA-Z0-9_-]+)/);
+                    if (idMatch) {
+                        const extractedId = idMatch[1];
+                        console.log(`Gemini Project Manager: Extracted fallback ID: ${extractedId}`);
+                        onAddChat(folder.id, {
+                            id: extractedId,
+                            title: "Dropped Chat",
+                            url: url,
+                            timestamp: Date.now()
+                        });
+                    } else {
+                        console.warn("Gemini Project Manager: Could not extract ID from URL:", url);
+                    }
+                } else {
+                    console.warn("Gemini Project Manager: Drop ignored - no JSON and no valid Gemini URL");
+                }
+            }
+        } catch (err) {
+            console.error("Gemini Project Manager: Failed to handle drop:", err);
+        }
+    };
+
+
     return (
-        <div className="group">
-            <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-800 text-gray-300 hover:text-white group-hover:bg-opacity-80 transition-colors">
+        <div
+            className={`group ${isDragOver ? 'bg-gray-800 ring-1 ring-blue-500 rounded' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
+            <div className={`flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-800 text-gray-300 hover:text-white group-hover:bg-opacity-80 transition-colors ${isDragOver ? 'bg-gray-800' : ''}`}>
                 <button
                     onClick={() => setIsExpanded(!isExpanded)}
                     className="p-0.5 hover:bg-gray-700 rounded text-gray-500"
@@ -109,7 +210,7 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
                 </button>
 
                 <div className="flex-1 flex items-center gap-2 min-w-0" onDoubleClick={() => setIsEditing(true)}>
-                    <FolderIcon size={16} className="text-blue-400 flex-shrink-0" />
+                    <FolderIcon size={16} className={`text-blue-400 flex-shrink-0 ${isDragOver ? 'scale-110 transition-transform' : ''}`} />
                     {isEditing ? (
                         <input
                             type="text"
@@ -176,7 +277,7 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
             </div>
 
             {isExpanded && (
-                <div className="ml-7 border-l border-gray-700 pl-2 py-1 space-y-1">
+                <div className={`ml-7 border-l border-gray-700 pl-2 py-1 space-y-1 ${isDragOver ? 'pointer-events-none' : ''}`}>
                     {folder.chatIds.length === 0 ? (
                         <div className="text-[10px] text-gray-600 italic">Empty</div>
                     ) : (
