@@ -41,6 +41,42 @@ export const storage = {
         await chrome.storage.local.set(data);
     },
 
+    // --- NEW: Backup & Restore Utilities ---
+    exportData: async () => {
+        const data = await storage.get();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `gemini-projects-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    },
+
+    importData: async (jsonString: string): Promise<boolean> => {
+        try {
+            const data = JSON.parse(jsonString);
+            // Basic validation to prevent corruption
+            if (!Array.isArray(data.folders) || typeof data.chats !== 'object') {
+                throw new Error('Invalid backup file format');
+            }
+            await storage.save(data);
+            return true;
+        } catch (e) {
+            console.error('Gemini Project Manager: Import failed', e);
+            alert('Failed to import data. Please check the file.');
+            return false;
+        }
+    },
+
+    // Helper to clear everything (useful for debugging or reset)
+    clearAll: async () => {
+        await chrome.storage.local.clear();
+    },
+    // ---------------------------------------
+
     addFolder: async (name: string, parentId: string | null = null) => {
         const data = await storage.get();
         const newFolder: Folder = {

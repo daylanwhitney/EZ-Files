@@ -4,11 +4,13 @@ import type { Folder, Chat } from '../types';
 
 export function useProjects() {
     const [folders, setFolders] = useState<Folder[]>([]);
+    const [chats, setChats] = useState<Record<string, Chat>>({}); // NEW: Expose chats
     const [loading, setLoading] = useState(true);
 
     const refresh = async () => {
         const data = await storage.get();
         setFolders(data.folders);
+        setChats(data.chats || {}); // NEW
         setLoading(false);
     };
 
@@ -17,7 +19,7 @@ export function useProjects() {
 
         // Optional: Listen for storage changes if multiple tabs open
         const listener = (changes: { [key: string]: chrome.storage.StorageChange }) => {
-            if (changes.folders) {
+            if (changes.folders || changes.chats) {
                 refresh();
             }
         };
@@ -40,5 +42,11 @@ export function useProjects() {
         refresh();
     };
 
-    return { folders, loading, addFolder, deleteFolder, addChatToFolder, refresh };
+    // NEW: Wrapper for import to trigger refresh
+    const importData = async (json: string) => {
+        const success = await storage.importData(json);
+        if (success) refresh();
+    }
+
+    return { folders, chats, loading, addFolder, deleteFolder, addChatToFolder, refresh, importData };
 }

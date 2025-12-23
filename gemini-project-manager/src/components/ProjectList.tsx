@@ -1,14 +1,52 @@
 import { useState, useEffect, useRef } from 'react';
-import { Folder as FolderIcon, Trash2, ChevronRight, ChevronDown, Plus, Pencil } from 'lucide-react';
+import { Folder as FolderIcon, Trash2, ChevronRight, ChevronDown, Plus, Pencil, Search } from 'lucide-react';
 import { useProjects } from '../hooks/useProjects';
-import type { Folder, StorageData } from '../types';
+import { useActiveChat } from '../hooks/useActiveChat';
+import type { Folder, Chat, StorageData } from '../types';
 import { storage } from '../utils/storage';
 import { findChatElement } from '../utils/dom';
+import { clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+function cn(...inputs: (string | undefined | null | false)[]) {
+    return twMerge(clsx(inputs));
+}
 
 export default function ProjectList() {
-    const { folders, loading, addFolder, deleteFolder, addChatToFolder, refresh } = useProjects();
+    const { folders, chats, loading, addFolder, deleteFolder, addChatToFolder, refresh } = useProjects();
     const [newFolderName, setNewFolderName] = useState('');
     const [isCreating, setIsCreating] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+
+    // --- Active Chat Detection (Title-Based) ---
+    // Use the useActiveChat hook to get the active chat title from Gemini's DOM
+    const { activeTitle } = useActiveChat();
+
+    // Helper to normalize titles for comparison
+    const normalize = (s: string) => s.toLowerCase().trim().replace(/[^\w\s]/g, '');
+
+    // Find the chat ID that matches the active title
+    const activeChatId = activeTitle
+        ? Object.keys(chats).find(key => {
+            const chat = chats[key];
+            if (!chat.title) return false;
+
+            const storedNorm = normalize(chat.title);
+            const activeNorm = normalize(activeTitle);
+
+            // Exact match
+            if (storedNorm === activeNorm) return true;
+
+            // One contains the other (handles truncation)
+            if (storedNorm.includes(activeNorm) || activeNorm.includes(storedNorm)) return true;
+
+            // First N characters match (handles long titles that get truncated)
+            const minLen = Math.min(storedNorm.length, activeNorm.length, 20);
+            if (minLen >= 5 && storedNorm.substring(0, minLen) === activeNorm.substring(0, minLen)) return true;
+
+            return false;
+        }) || null
+        : null;
 
     const handleCreate = async () => {
         if (!newFolderName.trim()) return;
@@ -17,41 +55,92 @@ export default function ProjectList() {
         setIsCreating(false);
     };
 
+    // --- Search & Filtering Logic ---
+    let filteredFolders: (Folder & { _forceExpand?: boolean })[] = folders;
+
+    // Only filter if there is a search query
+    if (searchQuery.trim()) {
+        filteredFolders = folders.map(folder => {
+            // 1. If folder name matches search, keep it and show all its chats
+            if (folder.name.toLowerCase().includes(searchQuery.toLowerCase())) {
+                return { ...folder, _forceExpand: true };
+            }
+
+            // 2. Otherwise, check if any CHATS inside match the search
+            const matchingChatIds = folder.chatIds.filter(chatId => {
+                const chat = chats[chatId];
+                return chat && chat.title.toLowerCase().includes(searchQuery.toLowerCase());
+            });
+
+            // If we found matching chats, return a folder copy with ONLY those chats
+            if (matchingChatIds.length > 0) {
+                return {
+                    ...folder,
+                    chatIds: matchingChatIds,
+                    _forceExpand: true // Expand to show results
+                };
+            }
+
+            return null; // Hide folder
+        }).filter(Boolean) as (Folder & { _forceExpand?: boolean })[];
+    }
+
+
     if (loading) return <div className="p-4 text-gray-400 text-sm">Loading projects...</div>;
 
     return (
-        <div className="flex-1 overflow-y-auto">
-            {/* Create Input */}
-            {isCreating ? (
-                <div className="p-2 mx-2 mb-2 bg-gray-800 rounded border border-gray-600">
+        <div className="flex-1 overflow-y-auto flex flex-col">
+
+            {/* Search Bar */}
+            <div className="px-4 py-2 border-b border-gray-700 bg-[#1e1f20] sticky top-0 z-10">
+                <div className="relative">
+                    <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
                     <input
-                        autoFocus
                         type="text"
-                        value={newFolderName}
-                        onChange={(e) => setNewFolderName(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-                        placeholder="Project Name..."
-                        className="w-full bg-transparent text-white text-sm focus:outline-none"
+                        placeholder="Search projects & chats..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full bg-gray-800 text-gray-200 text-xs py-2 pl-8 pr-2 rounded border border-gray-700 focus:border-blue-500 focus:outline-none placeholder-gray-500"
                     />
                 </div>
-            ) : (
-                <div className="px-4 pb-2">
-                    <button
-                        onClick={() => setIsCreating(true)}
-                        className="w-full flex items-center gap-2 text-gray-400 hover:text-white text-sm py-1.5 px-2 rounded hover:bg-gray-800 transition-colors"
-                    >
-                        <Plus size={14} />
-                        <span>New Project</span>
-                    </button>
-                </div>
+            </div>
+
+            {/* Create Button (only show if not searching) */}
+            {!searchQuery && (
+                isCreating ? (
+                    <div className="p-2 mx-2 my-2 bg-gray-800 rounded border border-gray-600">
+                        <input
+                            autoFocus
+                            type="text"
+                            value={newFolderName}
+                            onChange={(e) => setNewFolderName(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                            placeholder="Project Name..."
+                            className="w-full bg-transparent text-white text-sm focus:outline-none"
+                        />
+                    </div>
+                ) : (
+                    <div className="px-4 pt-2 pb-1">
+                        <button
+                            onClick={() => setIsCreating(true)}
+                            className="w-full flex items-center gap-2 text-gray-400 hover:text-white text-sm py-1.5 px-2 rounded hover:bg-gray-800 transition-colors"
+                        >
+                            <Plus size={14} />
+                            <span>New Project</span>
+                        </button>
+                    </div>
+                )
             )}
 
             {/* Folder List */}
-            <div className="space-y-0.5 px-2">
-                {folders.map(folder => (
+            <div className="space-y-0.5 px-2 mt-1">
+                {filteredFolders.map(folder => (
                     <FolderItem
                         key={folder.id}
                         folder={folder}
+                        allChats={chats} // Pass full chat map
+                        activeChatId={activeChatId} // Pass active ID
+                        forceExpand={folder._forceExpand}
                         onDelete={() => deleteFolder(folder.id)}
                         onAddChat={addChatToFolder}
                         onRefresh={refresh}
@@ -62,9 +151,9 @@ export default function ProjectList() {
                     />
                 ))}
 
-                {folders.length === 0 && !isCreating && (
+                {filteredFolders.length === 0 && (
                     <div className="text-xs text-gray-500 text-center py-4">
-                        No projects yet.
+                        {searchQuery ? 'No results found.' : 'No projects yet.'}
                     </div>
                 )}
             </div>
@@ -72,14 +161,26 @@ export default function ProjectList() {
     );
 }
 
-function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
+function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onAddChat, onRefresh, onRemoveChat }: {
     folder: Folder;
+    allChats: Record<string, Chat>;
+    activeChatId: string | null;
+    forceExpand?: boolean;
     onDelete: () => void;
     onAddChat: (folderId: string, chat: any) => void;
     onRefresh: () => void;
     onRemoveChat: (chatId: string) => void;
 }) {
-    const [isExpanded, setIsExpanded] = useState(!folder.collapsed);
+    // Auto-expand if search forces it, OR if the active chat is inside this folder
+    const hasActiveChat = activeChatId ? folder.chatIds.includes(activeChatId) : false;
+
+    // Use an effect to sync expansion state when forceExpand or hasActiveChat changes
+    const [isExpanded, setIsExpanded] = useState(folder.collapsed ? false : true);
+
+    useEffect(() => {
+        if (forceExpand || hasActiveChat) setIsExpanded(true);
+    }, [forceExpand, hasActiveChat, folder.id]); // Added folder.id dependency just in case
+
     const [isEditing, setIsEditing] = useState(false);
     const [editName, setEditName] = useState(folder.name);
     const [isDragOver, setIsDragOver] = useState(false);
@@ -87,7 +188,6 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
 
     const handleSaveResize = async () => {
         if (!editName.trim()) return;
-        // Ideally we have a 'renameFolder' in storage/hook, but for now we manually update
         const data = await storage.get();
         const updatedFolders = data.folders.map(f => f.id === folder.id ? { ...f, name: editName } : f);
         await storage.save({ folders: updatedFolders });
@@ -102,20 +202,16 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
     };
 
     // --- Drag and Drop Handlers ---
-
     const handleDragOver = (e: React.DragEvent) => {
-        e.preventDefault(); // Client must allow drop
+        e.preventDefault();
         e.stopPropagation();
 
         if (!isDragOver) {
-            console.log("Gemini Project Manager: Drag Enter/Over detected on folder", folder.name);
             setIsDragOver(true);
         }
 
-        // Auto-expand logic
         if (!isExpanded && !expandTimerRef.current) {
             expandTimerRef.current = setTimeout(() => {
-                console.log("Gemini Project Manager: Auto-expanding folder", folder.name);
                 setIsExpanded(true);
             }, 600);
         }
@@ -125,8 +221,6 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
         e.preventDefault();
         e.stopPropagation();
 
-        // Fix: Only set isDragOver false if we are actually leaving the container,
-        // not just entering a child element.
         if (e.currentTarget.contains(e.relatedTarget as Node)) {
             return;
         }
@@ -142,8 +236,6 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
     const handleDrop = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        console.log("Gemini Project Manager: Drop detected on folder", folder.name);
-
         setIsDragOver(false);
 
         if (expandTimerRef.current) {
@@ -153,44 +245,31 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
 
         try {
             const json = e.dataTransfer.getData('application/json');
-            console.log("Gemini Project Manager: Drop data (JSON) length:", json?.length);
 
             if (json) {
                 const data = JSON.parse(json);
-                console.log(`Gemini Project Manager: Parsed drop data: ID="${data.id}", Title="${data.title}"`);
-
                 if (data.id && data.title) {
                     onAddChat(folder.id, data);
-                } else {
-                    console.error("Gemini Project Manager: Missing ID or Title in drop data", data);
                 }
             } else {
-                // Fallback for simple link drags if someone drags a link NOT via our script
                 const url = e.dataTransfer.getData('text/plain');
-                console.log("Gemini Project Manager: Drop fallback URL:", url);
-
                 if (url && url.includes('/app/')) {
                     const idMatch = url.match(/\/app\/([a-zA-Z0-9_-]+)/);
                     if (idMatch) {
-                        const extractedId = idMatch[1];
-                        console.log(`Gemini Project Manager: Extracted fallback ID: ${extractedId}`);
                         onAddChat(folder.id, {
-                            id: extractedId,
+                            id: idMatch[1],
                             title: "Dropped Chat",
                             url: url,
                             timestamp: Date.now()
                         });
-                    } else {
-                        console.warn("Gemini Project Manager: Could not extract ID from URL:", url);
                     }
-                } else {
-                    console.warn("Gemini Project Manager: Drop ignored - no JSON and no valid Gemini URL");
                 }
             }
         } catch (err) {
             console.error("Gemini Project Manager: Failed to handle drop:", err);
         }
     };
+
 
 
     return (
@@ -227,13 +306,13 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
                 </div>
 
                 {!isEditing && (
-                    <>
+                    <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
                                 setIsEditing(true);
                             }}
-                            className="opacity-0 group-hover:opacity-100 p-1 hover:text-blue-400 rounded transition-all"
+                            className="p-1 hover:text-blue-400 rounded transition-all"
                             title="Rename Folder"
                         >
                             <Pencil size={12} />
@@ -252,13 +331,12 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
                                 }
 
                                 if (match) {
-                                    const chatId = match[1];
-                                    onAddChat(folder.id, { id: chatId, title, url, timestamp: Date.now() });
+                                    onAddChat(folder.id, { id: match[1], title, url, timestamp: Date.now() });
                                 } else {
                                     alert("No active chat found.");
                                 }
                             }}
-                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-700 hover:text-green-400 rounded transition-all"
+                            className="p-1 hover:bg-gray-700 hover:text-green-400 rounded transition-all"
                             title="Add Current Chat"
                         >
                             <Plus size={12} />
@@ -266,12 +344,12 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
 
                         <button
                             onClick={(e) => { e.stopPropagation(); handleDelete(); }}
-                            className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-900/50 hover:text-red-400 rounded transition-all"
+                            className="p-1 hover:bg-red-900/50 hover:text-red-400 rounded transition-all"
                             title="Delete Folder"
                         >
                             <Trash2 size={12} />
                         </button>
-                    </>
+                    </div>
                 )}
             </div>
 
@@ -281,7 +359,13 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
                         <div className="text-[10px] text-gray-600 italic">Empty</div>
                     ) : (
                         folder.chatIds.map(chatId => (
-                            <ChatItem key={chatId} chatId={chatId} onRemove={() => onRemoveChat(chatId)} />
+                            <ChatItem
+                                key={chatId}
+                                chatId={chatId}
+                                chatData={allChats[chatId]} // Pass data directly
+                                isActive={chatId === activeChatId} // Pass active state
+                                onRemove={() => onRemoveChat(chatId)}
+                            />
                         ))
                     )}
                 </div>
@@ -290,62 +374,59 @@ function FolderItem({ folder, onDelete, onAddChat, onRefresh, onRemoveChat }: {
     );
 }
 
-function ChatItem({ chatId, onRemove }: { chatId: string; onRemove: () => void }) {
-    const [chat, setChat] = useState<any>(null);
+function ChatItem({ chatId, chatData, isActive, onRemove }: {
+    chatId: string;
+    chatData?: Chat;
+    isActive: boolean;
+    onRemove: () => void
+}) {
+    // If chatData is missing (rare), try to fetch or wait. 
+    // In search mode, we pass it down. In normal mode, we might rely on it being there.
+    const [localChat, setLocalChat] = useState<Chat | null>(chatData || null);
 
     useEffect(() => {
-        chrome.storage.local.get(['chats']).then((res) => {
-            const result = res as unknown as StorageData;
-            if (result.chats && result.chats[chatId]) {
-                const c = result.chats[chatId];
-                setChat(c);
-            }
-        });
-    }, [chatId]);
+        if (chatData) {
+            setLocalChat(chatData);
+        } else {
+            // Fallback fetch if not passed (legacy support or race condition)
+            chrome.storage.local.get(['chats']).then((res) => {
+                const result = res as unknown as StorageData;
+                if (result.chats && result.chats[chatId]) {
+                    setLocalChat(result.chats[chatId]);
+                }
+            });
+        }
+    }, [chatId, chatData]);
 
     const handleNavigation = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
 
-        if (!chat || !chat.url) return;
+        if (!localChat || !localChat.url) return;
 
-        // Strategy 1: "Direct Click" - Try to find the actual sidebar element and click it
-        // This is the most robust way to trigger SPA navigation without reloading
-        const sidebarEl = findChatElement(chatId, chat.title);
+        const sidebarEl = findChatElement(chatId, localChat.title);
         if (sidebarEl) {
-            console.log("Gemini Project Manager: Clicking sidebar element for chat", chatId);
             sidebarEl.click();
-            return;
+        } else {
+            // Fallback navigation
+            window.location.href = localChat.url;
         }
-
-        console.warn("Gemini Project Manager: Sidebar element not found, using Proxy Click fallback");
-
-        // Strategy 2: "Proxy Click"
-        // Events inside Shadow DOM might not bubble correctly to the app's router listener.
-        // We create a temporary link in the MAIN document and click it.
-        const link = document.createElement('a');
-        link.href = chat.url;
-        link.style.display = 'none';
-        document.body.appendChild(link);
-
-        // Dispatch a native click event
-        link.click();
-
-        // Cleanup
-        setTimeout(() => {
-            link.remove();
-        }, 100);
     };
 
-    if (!chat) return <div className="text-xs text-gray-500 py-0.5 px-2">Loading...</div>;
+    if (!localChat) return <div className="text-xs text-gray-500 py-0.5 px-2">Loading...</div>;
 
     return (
         <div
-            className="group flex items-center justify-between text-xs text-gray-400 hover:text-white py-1 px-2 hover:bg-gray-800 rounded transition-colors cursor-pointer"
+            className={cn(
+                "group flex items-center justify-between text-xs py-1 px-2 rounded transition-colors cursor-pointer",
+                isActive
+                    ? "bg-blue-900/40 text-blue-200 font-medium border-l-2 border-blue-400"
+                    : "text-gray-400 hover:text-white hover:bg-gray-800"
+            )}
             onClick={handleNavigation}
-            title={chat.title}
+            title={localChat.title}
         >
-            <span className="truncate flex-1">{chat.title}</span>
+            <span className="truncate flex-1">{localChat.title}</span>
             <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                     onClick={(e) => {
@@ -353,7 +434,6 @@ function ChatItem({ chatId, onRemove }: { chatId: string; onRemove: () => void }
                         if (confirm('Remove chat from project?')) onRemove();
                     }}
                     className="p-0.5 hover:text-red-400"
-                    title="Remove Chat"
                 >
                     <Trash2 size={10} />
                 </button>
