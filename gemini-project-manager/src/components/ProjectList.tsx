@@ -321,15 +321,15 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                 if (data.id && data.title) {
                     onAddChat(folder.id, data);
 
-                    // NEW: Check if needs indexing
-                    // If content is missing, queue it up!
-                    // We check `allChats` first because `data` from drag might not have content
+                    // Check if needs indexing - if content is missing, queue it up
                     const existingChat = allChats[data.id];
-                    if (!existingChat || !existingChat.content) {
+                    const needsIndexing = !existingChat || !existingChat.content;
+                    if (needsIndexing) {
                         console.log("Gemini Project Manager: Chat dropped is unindexed. Queueing:", data.id);
                         chrome.runtime.sendMessage({
                             type: 'CMD_INDEX_CHAT',
-                            chatId: data.id
+                            chatId: data.id,
+                            title: data.title // Include title for discovery mode
                         });
                     }
                 }

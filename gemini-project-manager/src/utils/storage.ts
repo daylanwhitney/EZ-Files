@@ -31,6 +31,80 @@ async function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 export const storage = {
+    /**
+     * Migrate a hash-based chat ID to a real chat ID.
+     * This is called when we discover the real ID for a previously dropped chat.
+     * It updates all folder memberships and the chats record.
+     */
+    migrateHashToRealId: async (hashId: string, realId: string, title: string): Promise<boolean> => {
+        return withStorageLock(async () => {
+            const data = await storage.get();
+            
+            // Check if hash-based chat exists
+            if (!data.chats[hashId]) {
+                return false;
+            }
+            
+            console.log(`Gemini Project Manager: Migrating hash ID ${hashId} to real ID ${realId}`);
+            
+            // Get the hash-based chat data
+            const hashChat = data.chats[hashId];
+            
+            // Create or update the real chat entry
+            const realChat = data.chats[realId] || {};
+            data.chats[realId] = {
+                ...realChat,
+                id: realId,
+                title: title || hashChat.title,
+                url: `https://gemini.google.com/app/${realId}`,
+                timestamp: hashChat.timestamp || Date.now(),
+                content: realChat.content || hashChat.content, // Preserve any existing content
+                turnCount: realChat.turnCount || hashChat.turnCount
+            };
+            
+            // Update all folders: replace hashId with realId
+            const updatedFolders = data.folders.map(folder => {
+                if (folder.chatIds.includes(hashId)) {
+                    // Remove hashId, add realId if not already present
+                    const newChatIds = folder.chatIds.filter(id => id !== hashId);
+                    if (!newChatIds.includes(realId)) {
+                        newChatIds.push(realId);
+                    }
+                    return { ...folder, chatIds: newChatIds };
+                }
+                return folder;
+            });
+            
+            // Delete the hash-based chat entry
+            delete data.chats[hashId];
+            
+            await storage.save({ folders: updatedFolders, chats: data.chats });
+            console.log(`Gemini Project Manager: Migration complete. Folders updated.`);
+            return true;
+        });
+    },
+
+    /**
+     * Find a chat by title that has a hash-based ID (starts with "chat_")
+     */
+    findHashChatByTitle: async (title: string): Promise<{ id: string; chat: any } | null> => {
+        const data = await storage.get();
+        const normalizedTitle = title.toLowerCase().trim();
+        
+        for (const [id, chat] of Object.entries(data.chats)) {
+            if (id.startsWith('chat_') && chat.title) {
+                const chatTitleNorm = chat.title.toLowerCase().trim();
+                // Check for exact match or one contains the other
+                if (chatTitleNorm === normalizedTitle || 
+                    chatTitleNorm.includes(normalizedTitle) || 
+                    normalizedTitle.includes(chatTitleNorm)) {
+                    return { id, chat };
+                }
+            }
+        }
+        return null;
+    },
+
     get: async (): Promise<StorageData> => {
         const result = await chrome.storage.local.get(null) as any;
 

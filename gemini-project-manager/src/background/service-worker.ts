@@ -20,7 +20,7 @@ chrome.runtime.onMessage.addListener((message) => {
 // Listen for Indexing Commands
 chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'CMD_INDEX_CHAT' && message.chatId) {
-        queue.addToQueue(message.chatId);
+        queue.addToQueue(message.chatId, message.title);
     }
 });
 
