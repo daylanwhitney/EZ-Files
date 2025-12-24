@@ -10,18 +10,39 @@ chrome.runtime.onInstalled.addListener(() => {
     console.log("Gemini Project Manager installed");
 });
 
-// Listen for response messages from Content Script to routing back to ChatService
-chrome.runtime.onMessage.addListener((message) => {
+// Unified message handler for all runtime messages
+chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
+    // Route BG_CHAT_RESPONSE_DONE to the chat service
     if (message.type === 'BG_CHAT_RESPONSE_DONE') {
+        console.log("Service Worker: Received BG_CHAT_RESPONSE_DONE", {
+            requestId: message.requestId,
+            hasText: !!message.text,
+            hasError: !!message.error
+        });
         chatService.handleExternalResponse(message);
+        return false; // No async response needed
     }
-});
-
-// Listen for Indexing Commands
-chrome.runtime.onMessage.addListener((message) => {
+    
+    // Route indexing commands to the queue
     if (message.type === 'CMD_INDEX_CHAT' && message.chatId) {
         queue.addToQueue(message.chatId, message.title);
+        return false;
     }
+    
+    // ARCHIVE_COMPLETE is handled by IndexingQueue's own listener
+    // Just log it here for debugging
+    if (message.type === 'ARCHIVE_COMPLETE') {
+        console.log("Service Worker: ARCHIVE_COMPLETE received for", message.chatId);
+        return false;
+    }
+    
+    // Route discovery complete (just log for now, migration happens in content script)
+    if (message.type === 'DISCOVERY_COMPLETE') {
+        console.log("Service Worker: Discovery complete", message);
+        return false;
+    }
+    
+    return false; // Default: no async response
 });
 
 // Listen for History API changes (SPA navigation)
@@ -54,4 +75,10 @@ chrome.webNavigation.onCompleted.addListener((details) => {
     });
 }, {
     url: [{ hostContains: 'gemini.google.com' }]
+});
+
+// Clean up chat service windows when extension is suspended/reloaded
+chrome.runtime.onSuspend?.addListener(() => {
+    console.log("Service Worker: Suspending, cleaning up chat sessions");
+    chatService.closeAllSessions();
 });

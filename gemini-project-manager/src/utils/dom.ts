@@ -162,42 +162,164 @@ export function scrapeChatContent(): { text: string; turnCount: number } | null 
     return { text, turnCount };
 }
 
-// Helper to inject text into the prompt box AND submit it
-export function injectPrompt(text: string) {
-    const editor = document.querySelector('div[contenteditable="true"]') as HTMLElement;
-    if (editor) {
-        editor.focus();
-        // Modern frameworks (React/Lit) need input events
-        document.execCommand('insertText', false, text);
-        editor.dispatchEvent(new Event('input', { bubbles: true }));
-
-        // Give the UI a moment to register the input, then click submit
-        setTimeout(() => {
-            // Find the submit button - Gemini uses various selectors
-            const submitBtn = document.querySelector('button[aria-label*="Send"]') as HTMLButtonElement
-                || document.querySelector('button[data-test-id="send-button"]') as HTMLButtonElement
-                || document.querySelector('button.send-button') as HTMLButtonElement
-                // Fallback: find a button near the editor that looks like submit
-                || document.querySelector('div[contenteditable="true"]')?.closest('form')?.querySelector('button[type="submit"]') as HTMLButtonElement
-                // Last resort: any button with a "send" icon (paper plane SVG often)
-                || document.querySelector('button:has(svg[data-icon="send"])') as HTMLButtonElement;
-
-            if (submitBtn && !submitBtn.disabled) {
-                console.log("Gemini Project Manager: Clicking submit button");
-                submitBtn.click();
-            } else {
-                // If no button found, try pressing Enter
-                console.log("Gemini Project Manager: No submit button found, simulating Enter");
-                editor.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    bubbles: true
-                }));
-            }
-        }, 100);
-    } else {
-        console.error("Gemini Project Manager: Could not find editor element");
+/**
+ * Find the Gemini editor element using multiple selector strategies
+ */
+export function findEditor(): HTMLElement | null {
+    const selectors = [
+        'div[contenteditable="true"]',
+        'rich-textarea div[contenteditable="true"]',
+        '.ql-editor',
+        'textarea[placeholder*="prompt"]',
+        'textarea[placeholder*="Enter"]',
+        'div[role="textbox"]',
+        '[data-testid="text-input"]'
+    ];
+    
+    for (const sel of selectors) {
+        const el = document.querySelector(sel) as HTMLElement;
+        if (el && el.offsetParent !== null) { // Check if visible
+            return el;
+        }
     }
+    return null;
+}
+
+/**
+ * Find the submit button using multiple selector strategies
+ */
+export function findSubmitButton(): HTMLButtonElement | null {
+    // Priority-ordered list of selectors
+    const selectors = [
+        // Aria labels (most reliable if present)
+        'button[aria-label*="Send"]',
+        'button[aria-label*="send"]',
+        'button[aria-label*="Submit"]',
+        // Test IDs
+        'button[data-test-id="send-button"]',
+        'button[data-testid="send-button"]',
+        // Class names
+        'button.send-button',
+        'button.submit-button',
+        // Form submit
+        'form button[type="submit"]',
+        // Rich textarea buttons
+        'rich-textarea button:not([disabled])',
+    ];
+    
+    for (const sel of selectors) {
+        try {
+            const btn = document.querySelector(sel) as HTMLButtonElement;
+            if (btn && !btn.disabled && btn.offsetParent !== null) {
+                return btn;
+            }
+        } catch {
+            // Some selectors (like :has) may not be supported in all browsers
+        }
+    }
+    
+    // Fallback: Find button near editor with SVG icon
+    const editor = findEditor();
+    if (editor) {
+        // Look in parent containers
+        let container = editor.parentElement;
+        for (let i = 0; i < 5 && container; i++) {
+            const buttons = container.querySelectorAll('button:not([disabled])');
+            for (const btn of buttons) {
+                // Check if it looks like a send button (has SVG or specific text)
+                const hasIcon = btn.querySelector('svg, mat-icon');
+                const text = btn.textContent?.toLowerCase() || '';
+                if (hasIcon || text.includes('send') || text.includes('submit')) {
+                    return btn as HTMLButtonElement;
+                }
+            }
+            container = container.parentElement;
+        }
+    }
+    
+    return null;
+}
+
+/**
+ * Inject text into the prompt box AND submit it
+ * Returns true if submission was attempted, false if editor not found
+ */
+export function injectPrompt(text: string): boolean {
+    const editor = findEditor();
+    
+    if (!editor) {
+        console.error("Gemini Project Manager: Could not find editor element");
+        return false;
+    }
+
+    // Focus the editor
+    editor.focus();
+    
+    // Clear existing content and insert new text
+    // Using execCommand for maximum compatibility with frameworks
+    document.execCommand('selectAll', false);
+    document.execCommand('insertText', false, text);
+    
+    // Dispatch events for framework reactivity
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Give the UI a moment to register the input, then submit
+    setTimeout(() => {
+        const submitBtn = findSubmitButton();
+
+        if (submitBtn) {
+            console.log("Gemini Project Manager: Clicking submit button");
+            submitBtn.click();
+        } else {
+            // Fallback: try pressing Enter
+            console.log("Gemini Project Manager: No submit button found, simulating Enter");
+            
+            // Try both keyboard event and direct enter simulation
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true
+            }));
+            
+            // Also try keypress and keyup for frameworks that listen to those
+            editor.dispatchEvent(new KeyboardEvent('keypress', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true
+            }));
+            
+            editor.dispatchEvent(new KeyboardEvent('keyup', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true
+            }));
+        }
+    }, 150);
+    
+    return true;
+}
+
+/**
+ * Inject text and wait for submission to be processed
+ * Returns a promise that resolves when the text has been submitted
+ */
+export async function injectPromptAsync(text: string): Promise<boolean> {
+    return new Promise((resolve) => {
+        const success = injectPrompt(text);
+        if (!success) {
+            resolve(false);
+            return;
+        }
+        
+        // Wait for the submission to be processed
+        setTimeout(() => resolve(true), 500);
+    });
 }

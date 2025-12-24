@@ -1,33 +1,118 @@
+/**
+ * FolderChatService - Handles chat interactions with folder context
+ * 
+ * Flow:
+ * 1. UI sends CMD_FOLDER_CHAT_SEND with folderId, text, context
+ * 2. Service opens/reuses hidden Gemini window
+ * 3. Content script receives CMD_BG_CHAT_EXECUTE, injects prompt
+ * 4. Content script sends BG_CHAT_RESPONSE_DONE with response text
+ * 5. Service resolves the pending request and sends response to UI
+ */
 
 interface ChatSession {
     bgChatId: string | null;
     folderId: string;
+    windowId: number | null;
+    tabId: number | null;
     contextSent: boolean;
+    ready: boolean;
+    lastUsed: number; // Timestamp for session timeout
+}
+
+interface PendingRequest {
+    resolve: (response: { success: boolean; text?: string; error?: string; chatId?: string }) => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
 }
 
 export class FolderChatService {
     private sessions: Map<string, ChatSession> = new Map(); // folderId -> session
-    private activeWindowId: number | null = null;
+    private pendingRequests: Map<string, PendingRequest> = new Map(); // requestId -> pending
     private processing: boolean = false;
-    private queue: { folderId: string, text: string, context?: string, callback: (response: any) => void }[] = [];
+    private queue: { 
+        folderId: string; 
+        text: string; 
+        context?: string; 
+        requestId: string;
+        resolve: (response: any) => void;
+        reject: (error: Error) => void;
+    }[] = [];
+
+    private readonly SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
     constructor() {
+        // Listen for folder chat requests from UI
         chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
             if (message.type === 'CMD_FOLDER_CHAT_SEND') {
                 this.handleSendRequest(message, sendResponse);
                 return true; // Async response
             }
+            // Listen for close session request (when user closes folder chat UI)
+            if (message.type === 'CMD_CLOSE_FOLDER_CHAT') {
+                this.closeSession(message.folderId);
+                sendResponse({ success: true });
+                return false;
+            }
         });
+
+        // Listen for window close events to clean up sessions
+        chrome.windows.onRemoved.addListener((windowId) => {
+            this.handleWindowClosed(windowId);
+        });
+
+        // Periodically clean up idle sessions (every 2 minutes)
+        setInterval(() => this.cleanupIdleSessions(), 2 * 60 * 1000);
+    }
+
+    private cleanupIdleSessions() {
+        const now = Date.now();
+        for (const [folderId, session] of this.sessions.entries()) {
+            if (now - session.lastUsed > this.SESSION_TIMEOUT_MS) {
+                console.log('FolderChatService: Cleaning up idle session for folder:', folderId);
+                this.closeSession(folderId);
+            }
+        }
+    }
+
+    private async closeSession(folderId: string) {
+        const session = this.sessions.get(folderId);
+        if (session?.windowId) {
+            try {
+                await chrome.windows.remove(session.windowId);
+            } catch {
+                // Window already closed
+            }
+        }
+        this.sessions.delete(folderId);
+    }
+
+    private generateRequestId(): string {
+        return `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     }
 
     private handleSendRequest(message: any, sendResponse: (response: any) => void) {
+        const requestId = this.generateRequestId();
+        
         this.queue.push({
             folderId: message.folderId,
             text: message.text,
             context: message.context,
-            callback: sendResponse
+            requestId,
+            resolve: sendResponse,
+            reject: (error) => sendResponse({ success: false, error: error.message })
         });
+        
         this.processQueue();
+    }
+
+    private handleWindowClosed(windowId: number) {
+        // Find and clean up any session using this window
+        for (const [folderId, session] of this.sessions.entries()) {
+            if (session.windowId === windowId) {
+                console.log(`FolderChatService: Window ${windowId} closed, clearing session for folder ${folderId}`);
+                this.sessions.delete(folderId);
+            }
+        }
     }
 
     private async processQueue() {
@@ -37,139 +122,236 @@ export class FolderChatService {
         const item = this.queue[0];
 
         try {
-            // 1. Get or Create Session
+            // Get or create session for this folder
             let session = this.sessions.get(item.folderId);
+            
+            // Validate existing session
+            if (session && session.windowId) {
+                try {
+                    await chrome.windows.get(session.windowId);
+                } catch {
+                    // Window no longer exists
+                    console.log('FolderChatService: Previous window no longer exists, creating new one');
+                    session = undefined;
+                    this.sessions.delete(item.folderId);
+                }
+            }
+
             if (!session) {
-                // Determine a Chat ID? WE need to create one.
-                // For now, we'll open a "New Chat" window and grab it.
-                // But simplifying: We'll open a hidden window to a SPECIFIC URL if we knew it?
-                // Actually, we need to create a new chat first.
-                // Let's assume we can't easily "create" a background chat without opening a tab.
-                // Strategy: Open minimized window to /app/
-                // Wait for it to redirect to /app/ID
-                // Save that ID.
-                session = { bgChatId: null, folderId: item.folderId, contextSent: false };
+                session = await this.createSession(item.folderId);
                 this.sessions.set(item.folderId, session);
             }
 
-            // 2. Open Window to Session
-            // If we have an ID, open that. If not, open /app/ (new chat)
-            const url = session.bgChatId
-                ? `https://gemini.google.com/app/${session.bgChatId}`
-                : `https://gemini.google.com/app`;
+            // Update last used timestamp
+            session.lastUsed = Date.now();
 
-            // Close previous if exists?
-            if (this.activeWindowId) {
-                try { await chrome.windows.remove(this.activeWindowId); } catch (e) { }
+            // OPTIMIZATION: Only wait for content script if not already ready
+            if (!session.ready) {
+                await this.waitForContentScriptReady(session);
+            } else {
+                // Quick verify the tab is still responsive
+                try {
+                    await chrome.tabs.sendMessage(session.tabId!, { type: 'PING' });
+                } catch {
+                    // Tab unresponsive, recreate session
+                    console.log('FolderChatService: Session tab unresponsive, recreating');
+                    this.sessions.delete(item.folderId);
+                    session = await this.createSession(item.folderId);
+                    this.sessions.set(item.folderId, session);
+                    await this.waitForContentScriptReady(session);
+                }
             }
 
-            const win = await chrome.windows.create({
-                url: url + "?ez_bg_chat=true", // Add param to signify background chat mode
-                state: 'minimized',
-                focused: false
-            });
-            this.activeWindowId = win?.id || null;
+            // Prepare the message payload
+            const payload = {
+                requestId: item.requestId,
+                text: item.text,
+                context: (!session.contextSent && item.context) ? item.context : undefined
+            };
 
-            // 3. Delegate to Content Script in that Window
-            // We need to wait for it to load.
-            // The content script will tell us when it's ready.
-            // ... Ideally we use messaging.
+            // Send message and wait for response
+            const response = await this.sendMessageAndWait(session, payload, item.requestId);
 
-            // To simplify implementation for this turn:
-            // We will rely on `chrome.tabs.onUpdated` to inject the message once loaded.
+            // Mark context as sent if we included it
+            if (payload.context) {
+                session.contextSent = true;
+            }
 
-            // Wait for tab safely
-            const tabId = win?.tabs?.[0]?.id;
-            if (!tabId) throw new Error("No tab in window");
+            // Update session chat ID if provided
+            if (response.chatId) {
+                session.bgChatId = response.chatId;
+            }
 
-            // We need a way to pass data. We'll use scripting execution?
-            // Or wait for the content script to say "I'm ready"
-
-            // Let's start a poller here to find the tab and send message
-            await this.sendMessageToTab(tabId, item, session);
-
-            // 4. Success? Logic handled inside sendMessageToTab via msg response or scraper results
-            // ...
+            // Resolve with success
+            item.resolve({ success: true, text: response.text });
 
         } catch (err) {
-            console.error(err);
-            item.callback({ success: false, error: (err as any).message });
-            this.shiftQueue();
+            console.error('FolderChatService: Error processing request:', err);
+            
+            // Clear the session on error so next request gets a fresh start
+            this.sessions.delete(item.folderId);
+            
+            item.reject(err instanceof Error ? err : new Error(String(err)));
+        } finally {
+            this.queue.shift();
+            this.processing = false;
+            
+            // Process next item if any
+            if (this.queue.length > 0) {
+                setTimeout(() => this.processQueue(), 500);
+            }
         }
     }
 
-    private async sendMessageToTab(tabId: number, item: any, session: ChatSession) {
-        // Poll for tab status
-        let attempts = 0;
-        const maxAttempts = 30; // 30s
+    private async createSession(folderId: string): Promise<ChatSession> {
+        console.log('FolderChatService: Creating new session for folder:', folderId);
 
-        const poller = setInterval(() => {
-            attempts++;
-            chrome.tabs.sendMessage(tabId, {
-                type: 'CMD_BG_CHAT_EXECUTE',
-                payload: {
-                    text: item.text,
-                    context: (!session.contextSent && item.context) ? item.context : undefined
+        // Create a minimized window to Gemini
+        const win = await chrome.windows.create({
+            url: 'https://gemini.google.com/app?ez_bg_chat=true',
+            state: 'minimized',
+            focused: false
+        });
+
+        if (!win?.id || !win.tabs?.[0]?.id) {
+            throw new Error('Failed to create background chat window');
+        }
+
+        const session: ChatSession = {
+            bgChatId: null,
+            folderId,
+            windowId: win.id,
+            tabId: win.tabs[0].id,
+            contextSent: false,
+            ready: false,
+            lastUsed: Date.now()
+        };
+
+        return session;
+    }
+
+    private async waitForContentScriptReady(session: ChatSession, maxAttempts = 40): Promise<void> {
+        if (!session.tabId) throw new Error('No tab ID in session');
+
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                // Check if tab is complete
+                const tab = await chrome.tabs.get(session.tabId);
+                if (tab.status !== 'complete') {
+                    await this.delay(500);
+                    continue;
                 }
-            }, (response) => {
-                if (chrome.runtime.lastError) {
-                    // Not ready yet
-                    if (attempts >= maxAttempts) {
-                        clearInterval(poller);
-                        item.callback({ success: false, error: "Timeout waiting for BG Chat" });
-                        this.shiftQueue();
-                    }
+
+                // Ping the content script
+                const response = await chrome.tabs.sendMessage(session.tabId, { type: 'PING' });
+                if (response?.pong) {
+                    session.ready = true;
+                    console.log('FolderChatService: Content script ready');
                     return;
                 }
-
-                if (response && response.received) {
-                    clearInterval(poller);
-
-                    // Great, now we assume the content script is handling it.
-                    // We need to Capture the response...
-                    // The content script should reply with the AI text when done.
-
-                    // Update session if we just created a new one
-                    if (response.newChatId && !session.bgChatId) {
-                        session.bgChatId = response.newChatId;
-                    }
-                    if (item.context) session.contextSent = true;
-
-                    // The sendResponse from the content script will contain the final answer?
-                    // No, sendMessage callback is usually immediate.
-                    // We need a secondary listener for "RESPONSE_READY"
-                }
-            });
-        }, 1000);
-    }
-
-    // Helper to move queue
-    private shiftQueue() {
-        this.queue.shift();
-        this.processing = false;
-        setTimeout(() => this.processQueue(), 500);
-    }
-
-    // Separate listener for results
-    public handleExternalResponse(message: any) {
-        // When content script finishes scraping the response
-        if (message.type === 'BG_CHAT_RESPONSE_DONE') {
-            const item = this.queue[0];
-            if (item) {
-                // Update session ID if we didn't have it (redundant check)
-                const session = this.sessions.get(item.folderId);
-                if (session && message.chatId) session.bgChatId = message.chatId;
-
-                item.callback({ success: true, text: message.text });
-
-                // Close window?
-                if (this.activeWindowId) {
-                    chrome.windows.remove(this.activeWindowId);
-                    this.activeWindowId = null;
-                }
-
-                this.shiftQueue();
+            } catch {
+                // Content script not ready yet
             }
+            
+            await this.delay(500);
+        }
+
+        throw new Error('Timeout waiting for content script to be ready');
+    }
+
+    private async sendMessageAndWait(
+        session: ChatSession, 
+        payload: { requestId: string; text: string; context?: string },
+        requestId: string
+    ): Promise<{ text: string; chatId?: string }> {
+        if (!session.tabId) throw new Error('No tab ID in session');
+
+        return new Promise((resolve, reject) => {
+            // Set up timeout (600 seconds = 10 minutes - context + query + slow response detection)
+            const timeout = setTimeout(() => {
+                this.pendingRequests.delete(requestId);
+                console.error('FolderChatService: Request timed out for', requestId);
+                reject(new Error('Timeout waiting for AI response'));
+            }, 600000);
+
+            // Register pending request
+            this.pendingRequests.set(requestId, {
+                resolve: (response) => {
+                    clearTimeout(timeout);
+                    this.pendingRequests.delete(requestId);
+                    if (response.success) {
+                        resolve({ text: response.text || '', chatId: response.chatId });
+                    } else {
+                        reject(new Error(response.error || 'Unknown error'));
+                    }
+                },
+                reject: (error) => {
+                    clearTimeout(timeout);
+                    this.pendingRequests.delete(requestId);
+                    reject(error);
+                },
+                timeout
+            });
+
+            // Send the execute command to content script
+            chrome.tabs.sendMessage(session.tabId!, {
+                type: 'CMD_BG_CHAT_EXECUTE',
+                payload
+            }).catch((err) => {
+                clearTimeout(timeout);
+                this.pendingRequests.delete(requestId);
+                reject(new Error(`Failed to send message to content script: ${err.message}`));
+            });
+        });
+    }
+
+    private delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    /**
+     * Handle responses from content script
+     * Called by service worker when it receives BG_CHAT_RESPONSE_DONE
+     */
+    public handleExternalResponse(message: any) {
+        console.log('FolderChatService: Received external response:', message);
+
+        const requestId = message.requestId;
+        if (!requestId) {
+            console.warn('FolderChatService: Response missing requestId');
+            return;
+        }
+
+        const pending = this.pendingRequests.get(requestId);
+        if (!pending) {
+            console.warn('FolderChatService: No pending request for requestId:', requestId);
+            return;
+        }
+
+        if (message.error) {
+            pending.resolve({ success: false, error: message.error });
+        } else {
+            pending.resolve({ 
+                success: true, 
+                text: message.text,
+                chatId: message.chatId 
+            });
+        }
+    }
+
+    /**
+     * Close all active sessions (cleanup)
+     */
+    public async closeAllSessions() {
+        for (const [folderId, session] of this.sessions.entries()) {
+            if (session.windowId) {
+                try {
+                    await chrome.windows.remove(session.windowId);
+                } catch {
+                    // Window already closed
+                }
+            }
+            this.sessions.delete(folderId);
         }
     }
 }

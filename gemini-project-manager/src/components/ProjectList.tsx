@@ -457,7 +457,14 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                 <FolderChat
                     folderName={folder.name}
                     folderId={folder.id}
-                    onClose={() => setIsChatOpen(false)}
+                    onClose={() => {
+                        setIsChatOpen(false);
+                        // Notify background to close the session (allows cleanup)
+                        chrome.runtime.sendMessage({ 
+                            type: 'CMD_CLOSE_FOLDER_CHAT', 
+                            folderId: folder.id 
+                        }).catch(() => {});
+                    }}
                     messages={chatMessages}
                     onSendMessage={handleSendMessage}
                     isLoading={isChatLoading}

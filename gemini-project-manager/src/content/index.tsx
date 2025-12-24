@@ -107,7 +107,7 @@ function createSidebarButton(isFallback = false) {
     return button;
 }
 
-import { deepQuerySelectorAll, getParents, scrapeChatContent, injectPrompt, findChatElement } from '../utils/dom';
+import { deepQuerySelectorAll, getParents, scrapeChatContent, findChatElement } from '../utils/dom';
 
 // Keep track of retry attempts to trigger fallback
 let retryCount = 0;
@@ -771,131 +771,489 @@ function checkBackgroundChatMode() {
         // Disable UI interactions to prevent accidental clicks if user restores window
         document.body.style.pointerEvents = 'none';
 
-        // Listen for Executor Commands
+        // Add visual indicator for debugging
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;top:10px;right:10px;background:rgba(0,100,200,0.9);color:white;padding:8px 12px;border-radius:4px;font-size:12px;z-index:99999;pointer-events:none;';
+        overlay.textContent = 'BG Chat Mode';
+        document.body.appendChild(overlay);
+
+        // Listen for messages from background
+        setupBackgroundChatListeners();
+    }
+}
+
+function setupBackgroundChatListeners() {
+    try {
+        chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
+            // Handle PING for ready check
+            if (message.type === 'PING') {
+                sendResponse({ pong: true });
+                return true;
+            }
+
+            // Handle execute command
+            if (message.type === 'CMD_BG_CHAT_EXECUTE') {
+                console.log("Gemini Project Manager [BG]: Execute command received");
+                sendResponse({ received: true });
+                performChatInteraction(message.payload);
+                return true;
+            }
+        });
+        console.log("Gemini Project Manager [BG]: Listeners set up successfully");
+    } catch (err) {
+        console.error("Gemini Project Manager [BG]: Failed to set up listeners:", err);
+    }
+}
+
+async function performChatInteraction(payload: { requestId: string; text: string; context?: string }) {
+    const { requestId, text, context } = payload;
+    
+    try {
+        // Wait for the page to be fully ready (editor available)
+        await waitForEditor();
+
+        // Combine context + query into single message for faster response
+        let fullPrompt = text;
+        if (context) {
+            fullPrompt = `[CONTEXT - Use this information to answer the query below]\n${context}\n\n[USER QUERY]\n${text}`;
+            console.log("Gemini Project Manager [BG]: Sending combined context + query...");
+        } else {
+            console.log("Gemini Project Manager [BG]: Sending query...");
+        }
+
+        // Inject the combined prompt
+        const success = await injectAndSubmit(fullPrompt);
+        if (!success) {
+            throw new Error("Failed to inject prompt");
+        }
+
+        // Wait for AI response
+        console.log("Gemini Project Manager [BG]: Waiting for AI response...");
+        const answer = await waitForResponseCompletion();
+
+        // Send response back to background service
+        console.log("Gemini Project Manager [BG]: Response captured, sending back");
+        safeSendMessage({
+            type: 'BG_CHAT_RESPONSE_DONE',
+            requestId,
+            text: answer,
+            chatId: getChatIdFromUrl()
+        }).catch(err => {
+            console.error("Gemini Project Manager [BG]: Failed to send response:", err);
+        });
+
+    } catch (err) {
+        console.error("Gemini Project Manager [BG]: Chat interaction failed:", err);
+        
+        // Send error response
+        safeSendMessage({
+            type: 'BG_CHAT_RESPONSE_DONE',
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+            chatId: getChatIdFromUrl()
+        }).catch(() => {});
+    }
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForEditor(maxAttempts = 40): Promise<HTMLElement> {
+    console.log("Gemini Project Manager [BG]: Waiting for editor...");
+    for (let i = 0; i < maxAttempts; i++) {
+        const editor = findEditor();
+        if (editor) {
+            console.log("Gemini Project Manager [BG]: Editor found after", i, "attempts");
+            return editor;
+        }
+        await delay(500);
+    }
+    console.error("Gemini Project Manager [BG]: Editor not found after", maxAttempts, "attempts");
+    throw new Error("Editor not found after waiting");
+}
+
+function findEditor(): HTMLElement | null {
+    // Try multiple selectors for the Gemini editor (ordered by likelihood)
+    const selectors = [
+        // Primary Gemini editor selectors
+        'div[contenteditable="true"][data-placeholder]',
+        'div[contenteditable="true"]',
+        'rich-textarea div[contenteditable="true"]',
+        'div.ql-editor[contenteditable="true"]',
+        // Textarea fallbacks
+        'textarea[placeholder*="Enter"]',
+        'textarea[placeholder*="prompt"]',
+        'textarea[aria-label*="prompt"]',
+        'textarea[aria-label*="message"]',
+        // Role-based
+        'div[role="textbox"]',
+        '[role="textbox"][contenteditable="true"]',
+        // Generic fallbacks
+        '.input-area div[contenteditable="true"]',
+        'form div[contenteditable="true"]'
+    ];
+    
+    for (const sel of selectors) {
         try {
-            chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
-                if (message.type === 'CMD_BG_CHAT_EXECUTE') {
-                    console.log("Gemini Project Manager [BG]: Received Execute Command");
-
-                    // 1. Acknowledge receipt
-                    sendResponse({ received: true });
-
-                    // 2. Perform Actions
-                    performChatInteraction(message.payload);
-                    return;
-                }
-            });
-        } catch (err) {
-            console.warn("Gemini Project Manager: Could not add message listener:", err);
+            const el = document.querySelector(sel) as HTMLElement;
+            // Check if element is visible and usable
+            if (el && el.offsetParent !== null) {
+                return el;
+            }
+        } catch {
+            // Invalid selector, skip
         }
     }
+    return null;
 }
 
-async function performChatInteraction(payload: { text: string, context?: string }) {
-    // 1. Inject Context (System Prompt equivalence)
-    if (payload.context) {
-        console.log("Gemini Project Manager [BG]: Injecting Context...");
-        injectPrompt(payload.context);
-        await waitForResponseCompletion("Okay, I understand"); // Optional: wait for specific acknowledgement if possible, or just wait
+async function injectAndSubmit(text: string): Promise<boolean> {
+    const editor = findEditor();
+    if (!editor) {
+        console.error("Gemini Project Manager [BG]: No editor found for injection");
+        return false;
     }
 
-    // 2. Inject User Query
-    console.log("Gemini Project Manager [BG]: Sending Query...");
-    injectPrompt(payload.text);
-
-    // 3. Wait for Answer & Scrape
-    const answer = await waitForResponseCompletion(payload.text);
-
-    // 4. Send back to Background Service
-    console.log("Gemini Project Manager [BG]: Response Captured. Sending back.");
-    safeSendMessage({
-        type: 'BG_CHAT_RESPONSE_DONE',
-        text: answer,
-        chatId: getChatIdFromUrl()
-    }).catch(() => {});
+    console.log("Gemini Project Manager [BG]: Injecting text into editor...");
+    
+    // Focus the editor
+    editor.focus();
+    await delay(100);
+    
+    // Clear existing content
+    document.execCommand('selectAll', false);
+    await delay(50);
+    
+    // Insert new text
+    document.execCommand('insertText', false, text);
+    
+    // Dispatch input events for framework reactivity
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.dispatchEvent(new Event('change', { bubbles: true }));
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
+    
+    // Wait for UI to update
+    await delay(500);
+    
+    // Try to find and click submit button
+    console.log("Gemini Project Manager [BG]: Looking for submit button...");
+    const submitBtn = findSubmitButton();
+    
+    if (submitBtn) {
+        console.log("Gemini Project Manager [BG]: Found submit button, clicking...");
+        submitBtn.click();
+        await delay(200);
+        return true;
+    }
+    
+    // Fallback: try pressing Enter with Ctrl (some UIs require this)
+    console.log("Gemini Project Manager [BG]: No submit button found, trying Enter key...");
+    
+    // Try regular Enter first
+    editor.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+    }));
+    
+    await delay(100);
+    
+    // Also dispatch keyup
+    editor.dispatchEvent(new KeyboardEvent('keyup', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true
+    }));
+    
+    return true;
 }
 
-function waitForResponseCompletion(userPrompt?: string): Promise<string> {
+function findSubmitButton(): HTMLButtonElement | null {
+    // Priority-ordered selectors for Gemini's submit button
+    const selectors = [
+        // Aria labels (most reliable)
+        'button[aria-label="Send message"]',
+        'button[aria-label*="Send"]',
+        'button[aria-label*="send"]',
+        'button[aria-label*="Submit"]',
+        // Data attributes
+        'button[data-test-id="send-button"]',
+        'button[data-testid="send-button"]',
+        'button[data-testid*="send"]',
+        // Class-based
+        'button.send-button',
+        'button.submit-button',
+        // SVG icon inside button (common pattern)
+        'button svg[viewBox="0 0 24 24"]', // Generic icon button parent
+        // Material design icons
+        'button mat-icon',
+        // Form submit
+        'form button[type="submit"]',
+        // Buttons near input areas
+        '.input-area button',
+        '.chat-input button',
+        '.prompt-area button'
+    ];
+    
+    for (const sel of selectors) {
+        try {
+            let element = document.querySelector(sel);
+            // If we selected an SVG or icon, get the parent button
+            if (element && element.tagName !== 'BUTTON') {
+                element = element.closest('button');
+            }
+            const btn = element as HTMLButtonElement;
+            if (btn && !btn.disabled && btn.offsetParent !== null) {
+                console.log("Gemini Project Manager [BG]: Found submit button via selector:", sel);
+                return btn;
+            }
+        } catch {
+            // Invalid selector in this browser, skip
+        }
+    }
+    
+    // Fallback: Search for buttons near the editor
+    const editor = findEditor();
+    if (editor) {
+        // Walk up the DOM to find a container with buttons
+        let container = editor.parentElement;
+        for (let i = 0; i < 8 && container; i++) {
+            const buttons = container.querySelectorAll('button:not([disabled])');
+            for (const btn of buttons) {
+                const buttonEl = btn as HTMLButtonElement;
+                // Skip buttons that look like close/cancel
+                const ariaLabel = buttonEl.getAttribute('aria-label')?.toLowerCase() || '';
+                const innerText = buttonEl.innerText?.toLowerCase() || '';
+                
+                if (ariaLabel.includes('close') || ariaLabel.includes('cancel') ||
+                    innerText.includes('close') || innerText.includes('cancel')) {
+                    continue;
+                }
+                
+                // Check for SVG (icon button) or specific styling
+                const hasSvg = buttonEl.querySelector('svg');
+                const hasIcon = buttonEl.querySelector('mat-icon, .material-icons');
+                
+                if ((hasSvg || hasIcon) && buttonEl.offsetParent !== null) {
+                    console.log("Gemini Project Manager [BG]: Found submit button via DOM traversal");
+                    return buttonEl;
+                }
+            }
+            container = container.parentElement;
+        }
+    }
+    
+    console.warn("Gemini Project Manager [BG]: No submit button found");
+    return null;
+}
+
+function waitForResponseCompletion(maxWaitMs = 180000): Promise<string> {
     return new Promise((resolve) => {
         let isGenerating = false;
-        let checks = 0;
-
+        let idleChecks = 0;
+        let totalChecks = 0;
+        let lastResponseLength = 0;
+        const checkInterval = 300; // OPTIMIZED: Faster polling (was 500ms)
+        const maxChecks = maxWaitMs / checkInterval;
+        
+        console.log("Gemini Project Manager [BG]: Starting response wait...");
+        
         const poller = setInterval(() => {
-            checks++;
-            const stopBtn = document.querySelector('button[aria-label*="Stop generating"]');
+            totalChecks++;
+            
+            // Check for "Stop generating" button (indicates AI is generating)
+            const stopBtnSelectors = [
+                'button[aria-label*="Stop"]',
+                'button[aria-label*="stop"]',
+                'button.stop-button',
+                'button[data-testid*="stop"]',
+                '[aria-label*="Stop generating"]'
+            ];
+            
+            let stopBtn = null;
+            for (const sel of stopBtnSelectors) {
+                stopBtn = document.querySelector(sel);
+                if (stopBtn) break;
+            }
+            
+            // Check if response content is still growing
+            const currentResponse = getLastModelResponse();
+            const responseGrowing = currentResponse.length > lastResponseLength + 10;
+            
+            lastResponseLength = currentResponse.length;
 
-            if (stopBtn) {
+            // Only consider "generating" if we have STRONG evidence (stop button OR response growing)
+            // Loading indicators alone are too unreliable (false positives)
+            const strongGeneratingSignal = stopBtn || responseGrowing;
+            
+            if (strongGeneratingSignal) {
                 isGenerating = true;
-                checks = 0; // Reset timeout while generating
+                idleChecks = 0; // Reset idle counter while generating
+                if (totalChecks % 10 === 0) {
+                    console.log("Gemini Project Manager [BG]: Still generating...", currentResponse.length, "chars");
+                }
             } else {
                 if (isGenerating) {
-                    // It WAS generating, and now it stopped. Done!
-                    clearInterval(poller);
-                    resolve(getLastModelResponse(userPrompt));
-                } else {
-                    // Hasn't started yet? Wait a bit more.
-                    if (checks > 20) { // 10 seconds of idle
+                    // Was generating, now stopped - give a moment for final render
+                    idleChecks++;
+                    if (idleChecks >= 3) {
+                        console.log("Gemini Project Manager [BG]: Response complete after", totalChecks * checkInterval / 1000, "seconds");
                         clearInterval(poller);
-                        resolve(getLastModelResponse(userPrompt));
+                        resolve(getLastModelResponse());
+                        return;
+                    }
+                } else {
+                    // Not generating yet
+                    idleChecks++;
+                    // Check if we have any response content
+                    const hasResponse = currentResponse.length > 20 && 
+                                       !currentResponse.startsWith("Error:");
+                    
+                    if (hasResponse && idleChecks > 4) {
+                        console.log("Gemini Project Manager [BG]: Found response (instant)");
+                        clearInterval(poller);
+                        resolve(currentResponse);
+                        return;
+                    } else if (idleChecks > 15) {
+                        console.warn("Gemini Project Manager [BG]: No generation detected");
+                        clearInterval(poller);
+                        resolve(currentResponse || "Error: No response detected");
+                        return;
                     }
                 }
             }
-        }, 500);
+            
+            // Absolute timeout
+            if (totalChecks >= maxChecks) {
+                console.warn("Gemini Project Manager [BG]: Absolute timeout reached");
+                clearInterval(poller);
+                resolve(getLastModelResponse());
+            }
+        }, checkInterval);
     });
 }
 
-function getLastModelResponse(userPrompt?: string): string {
-    // STRATEGY 1: Prompt Anchoring (Robust)
-    if (userPrompt) {
-        const normalizedPrompt = userPrompt.trim().substring(0, 50);
-        const allElements = deepQuerySelectorAll(document.body, '*');
-        const candidates = allElements.filter(el =>
-            el.children.length === 0 && // Leaf node (text node container)
-            el.textContent &&
-            el.textContent.includes(normalizedPrompt)
-        );
+function getLastModelResponse(): string {
+    // STRATEGY 1: Look for model-response elements (Gemini's custom element)
+    const modelResponseSelectors = [
+        'model-response',
+        '[data-test-id*="model"]',
+        '[data-testid*="model"]',
+        '.model-response-text',
+        '.response-content',
+        '[class*="model-response"]',
+        '[class*="assistant-message"]'
+    ];
+    
+    for (const sel of modelResponseSelectors) {
+        try {
+            const elements = document.querySelectorAll(sel);
+            if (elements.length > 0) {
+                const lastResponse = elements[elements.length - 1] as HTMLElement;
+                const text = lastResponse.innerText?.trim();
+                if (text && text.length > 20) {
+                    console.log("Gemini Project Manager [BG]: Found response via", sel);
+                    return text;
+                }
+            }
+        } catch { /* skip */ }
+    }
 
-        if (candidates.length > 0) {
-            const lastPromptEl = candidates[candidates.length - 1];
-
-            let current: HTMLElement | null = lastPromptEl;
-            let containerRow: HTMLElement | null = null;
-
-            for (let i = 0; i < 5; i++) {
-                if (!current) break;
-                if (current.nextElementSibling) {
-                    const next = current.nextElementSibling as HTMLElement;
-                    if (next.textContent && next.textContent.length > 5) {
-                        containerRow = next;
+    // STRATEGY 2: Look for message containers with alternating roles
+    const containerSelectors = [
+        '[data-message-author]',
+        '[role="article"]',
+        '.message-container',
+        '.turn-container',
+        '[class*="conversation-turn"]',
+        '[class*="message-row"]'
+    ];
+    
+    for (const sel of containerSelectors) {
+        try {
+            const allContainers = document.querySelectorAll(sel);
+            // Find the last "assistant" or "model" message
+            for (let i = allContainers.length - 1; i >= 0; i--) {
+                const container = allContainers[i] as HTMLElement;
+                const author = container.getAttribute('data-message-author');
+                const classList = container.className || '';
+                
+                const isModel = author === 'model' || author === 'assistant' || 
+                               classList.includes('model') ||
+                               classList.includes('assistant') ||
+                               classList.includes('response');
+                
+                if (isModel) {
+                    const text = container.innerText?.trim();
+                    if (text && text.length > 20) {
+                        console.log("Gemini Project Manager [BG]: Found response via container");
+                        return text;
                     }
                 }
-                current = current.parentElement;
             }
+        } catch { /* skip */ }
+    }
 
-            if (containerRow) {
-                return containerRow.innerText;
+    // STRATEGY 3: Look for the main content area and find formatted text
+    const mainSelectors = ['main', '[role="main"]', '.conversation-container', '#chat-container'];
+    
+    for (const mainSel of mainSelectors) {
+        const main = document.querySelector(mainSel);
+        if (main) {
+            // Look for markdown-rendered content (common for AI responses)
+            const markdownContent = main.querySelectorAll('.markdown, .prose, [class*="markdown"]');
+            if (markdownContent.length > 0) {
+                const lastMarkdown = markdownContent[markdownContent.length - 1] as HTMLElement;
+                const text = lastMarkdown.innerText?.trim();
+                if (text && text.length > 20) {
+                    console.log("Gemini Project Manager [BG]: Found response via markdown content");
+                    return text;
+                }
             }
         }
     }
 
-    // STRATEGY 2: Model response selectors
-    const allModelItems = document.querySelectorAll('model-response, [data-test-id="conversation-turn-model"], .model-response-text');
-    if (allModelItems.length > 0) {
-        return (allModelItems[allModelItems.length - 1] as HTMLElement).innerText;
-    }
-
-    // STRATEGY 3: Fallback - Scraper (Last Ditch)
+    // STRATEGY 4: Use the content scraper as fallback
     const result = scrapeChatContent();
-    if (result && result.text) {
-        const blocks = result.text.split('\n\n');
-        if (blocks.length > 3) {
-            return blocks[blocks.length - 1] + "\n" + blocks[blocks.length - 2];
+    if (result && result.text && result.text.length > 50) {
+        // Extract the last portion which is likely the response
+        const blocks = result.text.split(/\n{2,}/);
+        if (blocks.length >= 2) {
+            // Return last 2-3 blocks as they likely contain the response
+            console.log("Gemini Project Manager [BG]: Using scraper fallback");
+            return blocks.slice(-3).join('\n\n');
         }
-
-        return "... " + result.text.substring(Math.max(0, result.text.length - 500));
+        return result.text.substring(Math.max(0, result.text.length - 2000));
     }
 
-    return "Error: Could not extract response. Please try again.";
+    // STRATEGY 5: Deep search for any substantial text block in main
+    const main = document.querySelector('main') || document.body;
+    const textContainers = main.querySelectorAll('p, div > span, pre, code, li');
+    const texts: string[] = [];
+    
+    textContainers.forEach(el => {
+        const htmlEl = el as HTMLElement;
+        // Skip input areas and toolbars
+        if (htmlEl.closest('[contenteditable]') || htmlEl.closest('button')) return;
+        
+        const text = htmlEl.innerText?.trim();
+        if (text && text.length > 30 && !texts.includes(text)) {
+            texts.push(text);
+        }
+    });
+    
+    if (texts.length > 0) {
+        console.log("Gemini Project Manager [BG]: Using deep search fallback");
+        return texts.slice(-5).join('\n\n');
+    }
+
+    return "Error: Could not extract AI response. The page structure may have changed.";
 }
 
 // --- Discovery Mode Handler ---
@@ -1159,3 +1517,4 @@ setTimeout(() => {
     checkIndexingMode();
     checkBackgroundChatMode();
 }, 2000);
+

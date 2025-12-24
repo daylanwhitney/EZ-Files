@@ -7,6 +7,7 @@ A Chrome extension that adds project/folder organization to Google Gemini chats.
 - **Folder Organization**: Create folders to organize your Gemini conversations
 - **Drag & Drop**: Drag chats from the Gemini sidebar into your project folders
 - **Quick Add**: Add the current chat to a folder with one click
+- **Folder Chat**: Ask questions about all chats in a folder at once - get summaries, find patterns, or search across conversations
 - **Persistent Storage**: All data saved locally via Chrome storage API
 - **Seamless Integration**: Sidebar integrates naturally with Gemini's UI
 
@@ -50,6 +51,34 @@ npm run typecheck
 - Chrome Extension Manifest V3
 
 ## Recent Changes
+
+### Feature: Folder Chat - Converse About Multiple Chats (Dec 2024)
+
+**New Feature**: Click the chat icon on any folder to ask questions about all the chats in that folder at once.
+
+**Use Cases**:
+- "Summarize all the conversations in this folder"
+- "What topics are discussed across these chats?"
+- "Find any mentions of [topic] in these conversations"
+- "What are the key decisions made in these discussions?"
+
+**How It Works**:
+1. Click the chat bubble icon on a folder to open Folder Chat
+2. The system aggregates content from all indexed chats in the folder
+3. Your question is sent to Gemini along with the combined context
+4. Gemini responds based on the full context of all chats
+
+**Performance Optimizations** (Dec 2024):
+- Combined context + query into single prompt (saves ~7-13s)
+- Faster response detection with 300ms polling (was 500ms)
+- Session reuse - hidden window stays open for follow-up messages
+- Auto-cleanup of idle sessions after 5 minutes
+
+**Technical Details**:
+- `FolderChatService` manages background chat sessions
+- Content script automates Gemini interactions in a hidden window
+- Sessions persist across messages for faster follow-ups
+- First message: ~10-15 seconds, follow-up messages: ~5-10 seconds
 
 ### Feature: Automatic Chat Indexing on Drag & Drop (Dec 2024)
 
