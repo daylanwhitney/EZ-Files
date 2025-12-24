@@ -7,7 +7,8 @@
         "storage",
         "tabs",
         "scripting",
-        "webNavigation"
+        "webNavigation",
+        "unlimitedStorage"
     ],
     "host_permissions": [
         "https://gemini.google.com/*"

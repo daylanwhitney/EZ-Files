@@ -99,3 +99,105 @@ export function findChatElement(chatId: string, chatTitle: string): HTMLElement 
 
     return null;
 }
+
+// NEW: Content Scraper
+export function scrapeChatContent(): { text: string; turnCount: number } | null {
+    // Strategy: Find the main scrollable container or message list
+    // Gemini often uses 'infinite-scroller' or specific roles
+
+    // We want to avoid capturing the sidebar, input area, or top nav.
+    // The main content is usually in a <main> tag or specific container.
+    let container = document.querySelector('main');
+
+    // Fallbacks if <main> isn't found or is empty
+    if (!container) {
+        const candidates = [
+            document.querySelector('.conversation-container'),
+            document.querySelector('infinite-scroller'),
+            document.querySelector('[role="main"]')
+        ];
+        container = candidates.find(c => c !== null) as HTMLElement | null;
+    }
+
+    if (!container) return null;
+
+    // Get text. We want to clean it up.
+    // Use innerText to preserve formatting
+    let text = container.innerText || '';
+
+    // --- CLEANING ---
+    // 1. Remove "Context Injection" headers (from our own extension)
+    // Pattern: "CONTEXT FROM FOLDER: ..." or "--- START CHAT: ..." or "--- END CHAT ---"
+    text = text.replace(/CONTEXT FROM FOLDER:.*?\n/gi, '');
+    text = text.replace(/--- START CHAT:.*?\n/gi, '');
+    text = text.replace(/--- END CHAT ---/gi, '');
+
+    // 2. Remove Gemini UI artifacts (commonly found at bottom or top)
+    const uiArtifacts = [
+        "View other drafts", "Regenerate", "Modify response", "Show drafts",
+        "Google", "Gemini", "Double-check response", "Enter a prompt here",
+        "Upload image", "Use microphone", "Listen", "Share", "Export"
+    ];
+
+    // Simple line-based filtering
+    text = text.split('\n')
+        .filter(line => {
+            const trimmed = line.trim();
+            if (trimmed.length < 2) return true; // Keep empty lines for spacing
+            // Filter out exact matches of UI artifacts
+            if (uiArtifacts.includes(trimmed)) return false;
+            return true;
+        })
+        .join('\n');
+
+    // Heuristic for turn counting (counting "model" icons or specific user blocks would be better, but approximate is fine)
+    const turnCount = text.split(/\n\n+/).length;
+
+    // Limit size if necessary (Chrome storage is ~5MB per item, text compresses well)
+    // Truncate to ~100k chars to be safe 
+    if (text.length > 100000) {
+        text = text.substring(0, 100000) + "\n...[Truncated]";
+    }
+
+    return { text, turnCount };
+}
+
+// Helper to inject text into the prompt box AND submit it
+export function injectPrompt(text: string) {
+    const editor = document.querySelector('div[contenteditable="true"]') as HTMLElement;
+    if (editor) {
+        editor.focus();
+        // Modern frameworks (React/Lit) need input events
+        document.execCommand('insertText', false, text);
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+
+        // Give the UI a moment to register the input, then click submit
+        setTimeout(() => {
+            // Find the submit button - Gemini uses various selectors
+            const submitBtn = document.querySelector('button[aria-label*="Send"]') as HTMLButtonElement
+                || document.querySelector('button[data-test-id="send-button"]') as HTMLButtonElement
+                || document.querySelector('button.send-button') as HTMLButtonElement
+                // Fallback: find a button near the editor that looks like submit
+                || document.querySelector('div[contenteditable="true"]')?.closest('form')?.querySelector('button[type="submit"]') as HTMLButtonElement
+                // Last resort: any button with a "send" icon (paper plane SVG often)
+                || document.querySelector('button:has(svg[data-icon="send"])') as HTMLButtonElement;
+
+            if (submitBtn && !submitBtn.disabled) {
+                console.log("Gemini Project Manager: Clicking submit button");
+                submitBtn.click();
+            } else {
+                // If no button found, try pressing Enter
+                console.log("Gemini Project Manager: No submit button found, simulating Enter");
+                editor.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    which: 13,
+                    bubbles: true
+                }));
+            }
+        }, 100);
+    } else {
+        console.error("Gemini Project Manager: Could not find editor element");
+    }
+}

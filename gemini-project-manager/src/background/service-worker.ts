@@ -1,7 +1,27 @@
 console.log("Gemini Project Manager: Service Worker Loaded");
 
+import { IndexingQueue } from './indexing-queue';
+import { FolderChatService } from './chat-service';
+
+const queue = new IndexingQueue();
+const chatService = new FolderChatService();
+
 chrome.runtime.onInstalled.addListener(() => {
     console.log("Gemini Project Manager installed");
+});
+
+// Listen for response messages from Content Script to routing back to ChatService
+chrome.runtime.onMessage.addListener((message) => {
+    if (message.type === 'BG_CHAT_RESPONSE_DONE') {
+        chatService.handleExternalResponse(message);
+    }
+});
+
+// Listen for Indexing Commands
+chrome.runtime.onMessage.addListener((message) => {
+    if (message.type === 'CMD_INDEX_CHAT' && message.chatId) {
+        queue.addToQueue(message.chatId);
+    }
 });
 
 // Listen for History API changes (SPA navigation)

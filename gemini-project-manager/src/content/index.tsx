@@ -75,7 +75,7 @@ function createSidebarButton(isFallback = false) {
     return button;
 }
 
-import { deepQuerySelectorAll, getParents } from '../utils/dom';
+import { deepQuerySelectorAll, getParents, scrapeChatContent, injectPrompt } from '../utils/dom';
 
 // Keep track of retry attempts to trigger fallback
 let retryCount = 0;
@@ -355,6 +355,7 @@ function makeChatsDraggable() {
                     const idMatch = url.match(/\/app\/([a-zA-Z0-9_-]{8,})/);
                     if (idMatch) {
                         id = idMatch[1];
+                        console.log("Gemini Project Manager: ID extracted via Method 1 (element anchor):", id);
                     }
                 }
 
@@ -366,6 +367,7 @@ function makeChatsDraggable() {
                         const idMatch = url.match(/\/app\/([a-zA-Z0-9_-]{8,})/);
                         if (idMatch) {
                             id = idMatch[1];
+                            console.log("Gemini Project Manager: ID extracted via Method 1b (child anchor):", id);
                         }
                     }
                 }
@@ -380,6 +382,7 @@ function makeChatsDraggable() {
                     if (testId && !testId.includes('new-chat') && testId.length >= 8 &&
                         !['conversation', 'chat', 'item', 'row', 'container'].includes(testId.toLowerCase())) {
                         id = testId.replace(/^conversation-/, '');
+                        console.log("Gemini Project Manager: ID extracted via Method 2 (data-testid):", id);
                     }
                 }
 
@@ -392,27 +395,44 @@ function makeChatsDraggable() {
                         if (val.length >= 8 && val.length < 50 && /^[a-zA-Z0-9_-]+$/.test(val) &&
                             !['conversation', 'chat', 'item', 'row', 'container', 'true', 'false'].includes(val.toLowerCase())) {
                             id = val;
+                            console.log("Gemini Project Manager: ID extracted via Method 3 (data-* attr):", id);
                             break;
                         }
                     }
                 }
 
-
+                // Method 4: Walk up the DOM tree to find a parent anchor with /app/ URL
+                // This catches cases where the dragged element is inside a clickable anchor
+                if (!id) {
+                    let parent = el.parentElement;
+                    let depth = 0;
+                    while (parent && !id && depth < 10) {
+                        if (parent instanceof HTMLAnchorElement && parent.href.includes('/app/')) {
+                            const match = parent.href.match(/\/app\/([a-zA-Z0-9_-]{8,})/);
+                            if (match) {
+                                id = match[1];
+                                url = parent.href;
+                                console.log("Gemini Project Manager: ID extracted via Method 4 (parent anchor):", id);
+                            }
+                        }
+                        parent = parent.parentElement;
+                        depth++;
+                    }
+                }
 
                 // Build URL if we have an ID but no URL
                 if (id && !url) {
                     url = `${window.location.origin}/app/${id}`;
                 }
 
-                // Ensure we have a UNIQUE ID – generate one based on title hash if missing
-                // This ensures each chat with a different title gets a different ID
+                // LAST RESORT: If still no ID, generate hash from title
+                // This creates a UNIQUE ID per title, so different chats won't collide
+                // NOTE: Indexing will NOT work for hash-based IDs
                 if (!id) {
-                    // Generate a deterministic ID from the title so same chat always gets same ID
                     const titleHash = generateTitleHash(title);
                     id = `chat_${titleHash}`;
-                    if (!url) {
-                        url = `${window.location.origin}/app/${id}`;
-                    }
+                    url = `${window.location.origin}/app/${id}`;
+                    console.warn("Gemini Project Manager: Could not find real chat ID. Using HASH fallback (indexing WILL NOT work):", id, "for title:", title);
                 }
 
                 console.log(`Gemini Project Manager: Drag Data - Title: "${title}", URL: ${url}, ID: ${id}`);
@@ -544,3 +564,303 @@ setTimeout(() => {
     injectSidebar();
     startChatPolling();
 }, 1500);
+
+// --- NEW: Auto-Archivist Logic ---
+
+import { storage } from '../utils/storage';
+
+
+let scrapeDebounce: any = null;
+
+function autoArchive() {
+    // 1. Check if we are in a chat (URL contains /app/ID)
+    const match = window.location.href.match(/\/app\/([a-zA-Z0-9_-]+)/);
+    if (!match) return;
+
+    const chatId = match[1];
+
+    // Debounce the scraping so we don't spam storage while scrolling/generating
+    if (scrapeDebounce) clearTimeout(scrapeDebounce);
+
+    scrapeDebounce = setTimeout(async () => {
+        // console.log("Gemini Project Manager: Auto-Archiving chat content...");
+        const result = scrapeChatContent();
+
+        if (result && result.text.length > 100) { // arbitrary min length
+            await storage.updateChatContent(chatId, result.text, result.turnCount);
+            console.log(`Gemini Project Manager: Archived ${result.turnCount} blocks for chat ${chatId}`);
+        }
+    }, 5000); // Wait 5 seconds after activity stops to save
+}
+
+// Trigger archival
+setInterval(autoArchive, 10000); // Check every 10s if we should scrape (backup)
+// Also trigger on navigation (popstate)
+// Also trigger on navigation (popstate)
+window.addEventListener('popstate', () => { setTimeout(autoArchive, 2000); checkIndexingMode(); });
+window.addEventListener('click', () => setTimeout(autoArchive, 2000)); // Clicks might expand content
+
+
+// --- NEW: Indexing Mode Handler ---
+function checkIndexingMode() {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('ez_idx') === 'true') {
+        // We are in a hidden indexing window
+        console.log("Gemini Project Manager: Indexing Mode Active (MutationObserver State Machine)");
+
+        // Show overlay (optional, but good for debugging if user peeks)
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);color:lime;z-index:99999;font-family:monospace;font-size:24px;display:flex;align-items:center;justify-content:center;pointer-events:none;';
+        overlay.innerText = "Gemini Project Manager\nIndexing Chat...\n(Waiting for content)";
+        document.body.appendChild(overlay);
+
+        // --- State Machine ---
+        let stabilityTimer: any = null;
+        // let lastContentLength = 0; // Unused
+        let stabilityDuration = 2000; // Wait for 2 seconds of silence
+
+        const finalizeIndexing = async () => {
+            const result = scrapeChatContent();
+            if (result && result.text.length > 50) {
+                overlay.innerText = `Indexing Complete.\nCaptured ${result.turnCount} turns.\nClosing...`;
+                await storage.updateChatContent(getChatIdFromUrl()!, result.text, result.turnCount);
+
+                chrome.runtime.sendMessage({
+                    type: 'ARCHIVE_COMPLETE',
+                    chatId: getChatIdFromUrl()
+                });
+
+                // Disconnect observer to save resources (window will close shortly)
+                observer.disconnect();
+            } else {
+                console.warn("Gemini Project Manager: Indexing timed out but found no content.");
+            }
+        };
+
+        const resetStabilityTimer = () => {
+            if (stabilityTimer) clearTimeout(stabilityTimer);
+            overlay.innerText = "Gemini Project Manager\nIndexing Chat...\n(Content Loading...)";
+
+            stabilityTimer = setTimeout(() => {
+                // DOM has been stable for `stabilityDuration`
+                // Double check if we actually have meaningful content
+                const currentContent = scrapeChatContent();
+                if (currentContent && currentContent.text.length > 100) {
+                    // Valid content + Stable -> Done
+                    finalizeIndexing();
+                } else {
+                    // Stable but empty? Wait longer (Gemini might be initializing)
+                    // Or maybe it's just really empty. The background queue timeout will kill us if we hang forever.
+                    overlay.innerText = "Gemini Project Manager\nWaiting for valid content structure...";
+                }
+            }, stabilityDuration);
+        };
+
+        // Observer Strategy: Watch the entire body for additions.
+        // We don't care about attributes, just new nodes (text/chat bubbles).
+        const observer = new MutationObserver((mutations) => {
+            // Filter for relevant changes? 
+            // Actually, we want to know *any* DOM activity to reset the timer.
+            // If the LLM is streaming, nodes are constantly added.
+            if (mutations.some(m => m.type === 'childList' || m.type === 'characterData')) {
+                resetStabilityTimer();
+            }
+        });
+
+        // Start observing
+        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+        // Kickoff the timer once in case the page is already fully loaded (static)
+        resetStabilityTimer();
+    }
+}
+
+function getChatIdFromUrl() {
+    const match = window.location.pathname.match(/\/app\/([a-zA-Z0-9_-]+)/);
+    return match ? match[1] : null;
+}
+
+// Check on load
+// --- NEW: Background Chat Automation ---
+// This runs inside the hidden window opened by FolderChatService
+
+
+
+function checkBackgroundChatMode() {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('ez_bg_chat') === 'true') {
+        console.log("Gemini Project Manager: Background Chat Mode Active");
+
+        // Disable UI interactions to prevent accidental clicks if user restores window
+        document.body.style.pointerEvents = 'none';
+
+        // Listen for Executor Commands
+        chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
+            if (message.type === 'CMD_BG_CHAT_EXECUTE') {
+                console.log("Gemini Project Manager [BG]: Received Execute Command");
+
+                // 1. Acknowledge receipt
+                sendResponse({ received: true });
+
+                // 2. Perform Actions
+                performChatInteraction(message.payload);
+                return;
+            }
+        });
+    }
+}
+
+async function performChatInteraction(payload: { text: string, context?: string }) {
+    // 1. Inject Context (System Prompt equivalence)
+    if (payload.context) {
+        console.log("Gemini Project Manager [BG]: Injecting Context...");
+        injectPrompt(payload.context);
+        await waitForResponseCompletion("Okay, I understand"); // Optional: wait for specific acknowledgement if possible, or just wait
+        // We wait for the "Okay, I understand" response from Gemini before sending the user Q
+    }
+
+    // 2. Inject User Query
+    console.log("Gemini Project Manager [BG]: Sending Query...");
+    injectPrompt(payload.text);
+
+    // 3. Wait for Answer & Scrape
+    const answer = await waitForResponseCompletion(payload.text);
+
+    // 4. Send back to Background Service
+    console.log("Gemini Project Manager [BG]: Response Captured. Sending back.");
+    chrome.runtime.sendMessage({
+        type: 'BG_CHAT_RESPONSE_DONE',
+        text: answer,
+        chatId: getChatIdFromUrl()
+    });
+}
+
+function waitForResponseCompletion(userPrompt?: string): Promise<string> {
+    return new Promise((resolve) => {
+        // We need to detect when the "Stop generating" button disappears 
+        // AND capturing the last message.
+
+        // Simple heuristic: Check for "Stop generating" button every 500ms
+        // If it appears, we are generating. If it disappears, we are done.
+
+        let isGenerating = false;
+        let checks = 0;
+
+        const poller = setInterval(() => {
+            checks++;
+            // Specific selector for the stop button may vary, usually has 'stop' icon or text
+            const stopBtn = document.querySelector('button[aria-label*="Stop generating"]');
+
+            if (stopBtn) {
+                isGenerating = true;
+                checks = 0; // Reset timeout while generating
+            } else {
+                if (isGenerating) {
+                    // It WAS generating, and now it stopped. Done!
+                    clearInterval(poller);
+                    resolve(getLastModelResponse(userPrompt));
+                } else {
+                    // Hasn't started yet? Wait a bit more.
+                    // If we wait too long (e.g. 10s) without starting, maybe it failed or was instant.
+                    if (checks > 20) { // 10 seconds of idle
+                        // Just give up or return whatever is there
+                        clearInterval(poller);
+                        resolve(getLastModelResponse(userPrompt));
+                    }
+                }
+            }
+        }, 500);
+    });
+}
+
+function getLastModelResponse(userPrompt?: string): string {
+    // STRATEGY 1: Prompt Anchoring (Robust)
+    // Find the element containing the user's LAST prompt, then get the next sibling (the model response)
+    if (userPrompt) {
+        // Normalize prompt for search (remove extra spaces)
+        const normalizedPrompt = userPrompt.trim().substring(0, 50); // Search for first 50 chars
+
+        // Find all elements containing this text
+        // We look for *leaf* users prompts. 
+        // Gemini user prompts often have 'user-query' or similar, but text search is safest.
+
+        /* 
+           We can use XPath or TreeWalker, but standard loop is fine.
+           We want the LAST occurrence.
+        */
+        const allElements = deepQuerySelectorAll(document.body, '*');
+        const candidates = allElements.filter(el =>
+            el.children.length === 0 && // Leaf node (text node container)
+            el.textContent &&
+            el.textContent.includes(normalizedPrompt)
+        );
+
+        if (candidates.length > 0) {
+            const lastPromptEl = candidates[candidates.length - 1];
+
+            // Now traverse UP until we find a container that has a SIBLING which is the model response
+            // In Gemini: 
+            // <user-turn> ... </user-turn>
+            // <model-turn> ... </model-turn>
+
+            let current: HTMLElement | null = lastPromptEl;
+            let containerRow: HTMLElement | null = null;
+
+            // Go up until we find a block-level container
+            for (let i = 0; i < 5; i++) {
+                if (!current) break;
+                // Check if current has a next sibling which is likely the response
+                if (current.nextElementSibling) {
+                    const next = current.nextElementSibling as HTMLElement;
+                    if (next.textContent && next.textContent.length > 5) {
+                        // Likely the response!
+                        // But we want to be sure it's not just a "edit" button.
+                        // Model responses are usually large.
+                        containerRow = next;
+                        // Don't break immediately, might be nested. 
+                        // But usually the Model Response is a top-level sibling to User Response wrapper.
+                    }
+                }
+                current = current.parentElement;
+            }
+
+            if (containerRow) {
+                return containerRow.innerText;
+            }
+        }
+    }
+
+
+    // STRATEGY 2: Leverage the scraper logic, but be smarter than dumping 'body'
+    // ...
+
+    // Re-implementing a very broad selector search for the LAST element
+    const allModelItems = document.querySelectorAll('model-response, [data-test-id="conversation-turn-model"], .model-response-text');
+    if (allModelItems.length > 0) {
+        return (allModelItems[allModelItems.length - 1] as HTMLElement).innerText;
+    }
+
+    // STRATEGY 3: Fallback - Scraper (Last Ditch)
+    // Only use if we really have to.
+    const result = scrapeChatContent();
+    if (result && result.text) {
+        // Try to take the very last bit after "model" text?
+        // Or just fail gracefully instead of dumping the whole UI.
+        const blocks = result.text.split('\n\n');
+        if (blocks.length > 3) {
+            return blocks[blocks.length - 1] + "\n" + blocks[blocks.length - 2]; // Return last couple blocks
+        }
+
+        // If text is huge, truncate it to end to avoid UI explosion
+        return "... " + result.text.substring(Math.max(0, result.text.length - 500));
+    }
+
+    return "Error: Could not extract response. Please try again.";
+}
+
+// Init
+setTimeout(() => {
+    checkIndexingMode();
+    checkBackgroundChatMode();
+}, 2000);
+

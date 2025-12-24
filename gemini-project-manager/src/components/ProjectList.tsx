@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Folder as FolderIcon, Trash2, ChevronRight, ChevronDown, Plus, Pencil, Search } from 'lucide-react';
+import { Trash2, MessageSquare, Plus, Folder as FolderIcon, ChevronRight, ChevronDown, Pencil, Search } from 'lucide-react';
+import FolderChat from './FolderChat';
 import { useProjects } from '../hooks/useProjects';
 import { useActiveChat } from '../hooks/useActiveChat';
 import type { Folder, Chat, StorageData } from '../types';
@@ -178,9 +179,77 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
     // Use an effect to sync expansion state when forceExpand or hasActiveChat changes
     const [isExpanded, setIsExpanded] = useState(folder.collapsed ? false : true);
 
+
+
+    // Filter chats in this folder to get their data
+    const folderChats = folder.chatIds.map(id => allChats[id]).filter(Boolean);
+
+    // Calculate stats
+    const totalChats = folderChats.length;
+    const syncedChats = folderChats.filter(c => c.content && c.content.length > 0).length;
+    const isFullySynced = totalChats > 0 && totalChats === syncedChats;
+
     useEffect(() => {
         if (forceExpand || hasActiveChat) setIsExpanded(true);
     }, [forceExpand, hasActiveChat, folder.id]); // Added folder.id dependency just in case
+
+    // Folder Chat State
+    const [isChatOpen, setIsChatOpen] = useState(false);
+    const [chatMessages, setChatMessages] = useState<{ id: string, role: 'user' | 'assistant', text: string, timestamp: number }[]>([]);
+    const [isChatLoading, setIsChatLoading] = useState(false);
+
+    // Initial load of messages? (Could persist later)
+
+    const handleChatWithFolder = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        // Toggle view
+        setIsChatOpen(!isChatOpen);
+    };
+
+    const handleSendMessage = async (text: string) => {
+        // 1. Add user message
+        const userMsg = { id: Date.now().toString(), role: 'user' as const, text, timestamp: Date.now() };
+        setChatMessages(prev => [...prev, userMsg]);
+        setIsChatLoading(true);
+
+        try {
+            // 2. Compile Context if first message (or simply always send it and let background handle dedup)
+            // Ideally we only send context ONCE per session.
+            let context = "";
+            if (chatMessages.length === 0) {
+                context = `CONTEXT FROM FOLDER: "${folder.name}"\n\n`;
+                folderChats.forEach((chat: Chat) => {
+                    if (chat.content) {
+                        context += `--- START CHAT: ${chat.title} ---\n${chat.content}\n--- END CHAT ---\n\n`;
+                    }
+                });
+            }
+
+            // 3. Send to Background
+            const response = await chrome.runtime.sendMessage({
+                type: 'CMD_FOLDER_CHAT_SEND',
+                folderId: folder.id,
+                text,
+                context: context ? context : undefined
+            });
+
+            // 4. Add AI response
+            if (response && response.success) {
+                const aiMsg = { id: (Date.now() + 1).toString(), role: 'assistant' as const, text: response.text, timestamp: Date.now() };
+                setChatMessages(prev => [...prev, aiMsg]);
+            } else {
+                const errorMsg = { id: (Date.now() + 1).toString(), role: 'assistant' as const, text: "Error: " + (response?.error || "Failed to talk to Gemini"), timestamp: Date.now() };
+                setChatMessages(prev => [...prev, errorMsg]);
+            }
+
+        } catch (err) {
+            console.error(err);
+            const errorMsg = { id: (Date.now() + 1).toString(), role: 'assistant' as const, text: "Error: Extension communication failed.", timestamp: Date.now() };
+            setChatMessages(prev => [...prev, errorMsg]);
+        } finally {
+            setIsChatLoading(false);
+        }
+    };
 
     const [isEditing, setIsEditing] = useState(false);
     const [editName, setEditName] = useState(folder.name);
@@ -197,7 +266,7 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
     };
 
     const handleDelete = () => {
-        if (confirm(`Are you sure you want to delete folder "${folder.name}"?`)) {
+        if (confirm(`Are you sure you want to delete folder "${folder.name}" ? `)) {
             onDelete();
         }
     };
@@ -251,6 +320,18 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                 const data = JSON.parse(json);
                 if (data.id && data.title) {
                     onAddChat(folder.id, data);
+
+                    // NEW: Check if needs indexing
+                    // If content is missing, queue it up!
+                    // We check `allChats` first because `data` from drag might not have content
+                    const existingChat = allChats[data.id];
+                    if (!existingChat || !existingChat.content) {
+                        console.log("Gemini Project Manager: Chat dropped is unindexed. Queueing:", data.id);
+                        chrome.runtime.sendMessage({
+                            type: 'CMD_INDEX_CHAT',
+                            chatId: data.id
+                        });
+                    }
                 }
             } else {
                 const url = e.dataTransfer.getData('text/plain');
@@ -302,7 +383,15 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                             onClick={e => e.stopPropagation()}
                         />
                     ) : (
-                        <span className="text-sm truncate select-none cursor-pointer">{folder.name}</span>
+                        <div className="flex items-center gap-2">
+                            <span className="text-sm truncate select-none cursor-pointer">{folder.name}</span>
+                            {/* NEW: Sync Status Indicator */}
+                            {totalChats > 0 && (
+                                <span className={`text-[10px] px-1 rounded ${isFullySynced ? 'bg-green-900/50 text-green-400' : 'bg-yellow-900/50 text-yellow-400'}`} title={`${syncedChats}/${totalChats} chats indexed`}>
+                                    {syncedChats}/{totalChats}
+                                </span>
+                            )}
+                        </div>
                     )}
                 </div>
 
@@ -317,6 +406,15 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                             title="Rename Folder"
                         >
                             <Pencil size={12} />
+                        </button>
+
+                        {/* NEW: Chat with Folder Button */}
+                        <button
+                            onClick={handleChatWithFolder}
+                            className={`p-1 rounded transition-all ${isChatOpen ? 'text-blue-400' : 'hover:text-blue-400 hover:bg-gray-700'}`}
+                            title="Chat with Folder Context"
+                        >
+                            <MessageSquare size={12} />
                         </button>
 
                         <button
@@ -352,26 +450,40 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                         </button>
                     </div>
                 )}
-            </div>
+            </div >
 
-            {isExpanded && (
-                <div className={`ml-7 border-l border-gray-700 pl-2 py-1 space-y-1 ${isDragOver ? 'pointer-events-none' : ''}`}>
-                    {folder.chatIds.length === 0 ? (
-                        <div className="text-[10px] text-gray-600 italic">Empty</div>
-                    ) : (
-                        folder.chatIds.map(chatId => (
-                            <ChatItem
-                                key={chatId}
-                                chatId={chatId}
-                                chatData={allChats[chatId]} // Pass data directly
-                                isActive={chatId === activeChatId} // Pass active state
-                                onRemove={() => onRemoveChat(chatId)}
-                            />
-                        ))
-                    )}
-                </div>
+            {/* Folder Chat Interface */}
+            {isChatOpen && (
+                <FolderChat
+                    folderName={folder.name}
+                    folderId={folder.id}
+                    onClose={() => setIsChatOpen(false)}
+                    messages={chatMessages}
+                    onSendMessage={handleSendMessage}
+                    isLoading={isChatLoading}
+                />
             )}
-        </div>
+
+            {
+                isExpanded && (
+                    <div className={`ml-7 border-l border-gray-700 pl-2 py-1 space-y-1 ${isDragOver ? 'pointer-events-none' : ''}`}>
+                        {folder.chatIds.length === 0 ? (
+                            <div className="text-[10px] text-gray-600 italic">Empty</div>
+                        ) : (
+                            folder.chatIds.map(chatId => (
+                                <ChatItem
+                                    key={chatId}
+                                    chatId={chatId}
+                                    chatData={allChats[chatId]} // Pass data directly
+                                    isActive={chatId === activeChatId} // Pass active state
+                                    onRemove={() => onRemoveChat(chatId)}
+                                />
+                            ))
+                        )}
+                    </div>
+                )
+            }
+        </div >
     );
 }
 
@@ -428,6 +540,14 @@ function ChatItem({ chatId, chatData, isActive, onRemove }: {
             title={localChat.title}
         >
             <span className="truncate flex-1">{localChat.title}</span>
+
+            {/* Sync Icon */}
+            {(!localChat.content || localChat.content.length === 0) && (
+                <span className="text-[10px] text-yellow-600 mr-2" title="Not Indexed (Open chat to sync)">
+                    ●
+                </span>
+            )}
+
             <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                     onClick={(e) => {

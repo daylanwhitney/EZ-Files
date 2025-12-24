@@ -86,6 +86,24 @@ export const storage = {
         await chrome.storage.local.set(data);
     },
 
+    // NEW: Update Chat Content
+    updateChatContent: async (chatId: string, content: string, turnCount: number) => {
+        const data = await storage.get();
+        const chat = data.chats[chatId];
+
+        if (!chat) return; // Chat must exist first
+
+        const updatedChat = {
+            ...chat,
+            content,
+            turnCount,
+            lastSynced: Date.now()
+        };
+
+        const updatedChats = { ...data.chats, [chatId]: updatedChat };
+        await storage.save({ chats: updatedChats });
+    },
+
     // --- WORKSPACE OPERATIONS ---
     addWorkspace: async (name: string) => {
         const data = await storage.get();

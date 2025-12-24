@@ -3,6 +3,10 @@ export interface Chat {
     title: string;
     url: string;
     timestamp: number;
+    // NEW: Content Caching
+    content?: string;      // The full text of the conversation
+    lastSynced?: number;   // When we last scraped it
+    turnCount?: number;    // Metric to show size
 }
 
 export interface Workspace {
