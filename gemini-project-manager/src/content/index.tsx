@@ -107,7 +107,7 @@ function createSidebarButton(isFallback = false) {
     return button;
 }
 
-import { deepQuerySelectorAll, getParents, scrapeChatContent, findChatElement } from '../utils/dom';
+import { deepQuerySelectorAll, getParents, scrapeChatContent, findChatElement, injectPrompt } from '../utils/dom';
 
 // Keep track of retry attempts to trigger fallback
 let retryCount = 0;
@@ -603,7 +603,7 @@ function autoArchive() {
     if (!match) return;
 
     const chatId = match[1];
-    
+
     // Skip if this is a hash-based ID (not a real Gemini chat)
     if (chatId.startsWith('chat_')) return;
 
@@ -616,13 +616,13 @@ function autoArchive() {
             console.warn("Gemini Project Manager: Extension context invalidated, skipping auto-archive");
             return;
         }
-        
+
         const result = scrapeChatContent();
 
         if (result && result.text.length > 100) { // arbitrary min length
             // Get the chat title from the page
             const title = getPageTitle();
-            
+
             try {
                 // Check if there's a hash-based chat with matching title that needs migration
                 const hashMatch = await storage.findHashChatByTitle(title);
@@ -630,7 +630,7 @@ function autoArchive() {
                     console.log(`Gemini Project Manager: Migrating hash chat ${hashMatch.id} to real ID ${chatId}`);
                     await storage.migrateHashToRealId(hashMatch.id, chatId, title);
                 }
-                
+
                 await storage.updateChatContent(chatId, result.text, result.turnCount);
                 console.log(`Gemini Project Manager: Archived ${result.turnCount} blocks for chat ${chatId}`);
             } catch (err) {
@@ -672,10 +672,10 @@ setInterval(() => {
     if (isExtensionContextValid()) autoArchive();
 }, 10000); // Check every 10s if we should scrape (backup)
 // Also trigger on navigation (popstate)
-window.addEventListener('popstate', () => { 
+window.addEventListener('popstate', () => {
     if (isExtensionContextValid()) {
-        setTimeout(autoArchive, 2000); 
-        checkIndexingMode(); 
+        setTimeout(autoArchive, 2000);
+        checkIndexingMode();
     }
 });
 window.addEventListener('click', () => {
@@ -686,7 +686,7 @@ window.addEventListener('click', () => {
 // --- Indexing Mode Handler ---
 function checkIndexingMode() {
     if (!isExtensionContextValid()) return;
-    
+
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('ez_idx') === 'true') {
         // We are in a hidden indexing window
@@ -711,7 +711,7 @@ function checkIndexingMode() {
                 safeSendMessage({
                     type: 'ARCHIVE_COMPLETE',
                     chatId: getChatIdFromUrl()
-                }).catch(() => {});
+                }).catch(() => { });
 
                 // Disconnect observer to save resources (window will close shortly)
                 observer.disconnect();
@@ -763,7 +763,7 @@ function getChatIdFromUrl() {
 
 function checkBackgroundChatMode() {
     if (!isExtensionContextValid()) return;
-    
+
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('ez_bg_chat') === 'true') {
         console.log("Gemini Project Manager: Background Chat Mode Active");
@@ -807,7 +807,7 @@ function setupBackgroundChatListeners() {
 
 async function performChatInteraction(payload: { requestId: string; text: string; context?: string }) {
     const { requestId, text, context } = payload;
-    
+
     try {
         // Wait for the page to be fully ready (editor available)
         await waitForEditor();
@@ -844,14 +844,14 @@ async function performChatInteraction(payload: { requestId: string; text: string
 
     } catch (err) {
         console.error("Gemini Project Manager [BG]: Chat interaction failed:", err);
-        
+
         // Send error response
         safeSendMessage({
             type: 'BG_CHAT_RESPONSE_DONE',
             requestId,
             error: err instanceof Error ? err.message : String(err),
             chatId: getChatIdFromUrl()
-        }).catch(() => {});
+        }).catch(() => { });
     }
 }
 
@@ -893,7 +893,7 @@ function findEditor(): HTMLElement | null {
         '.input-area div[contenteditable="true"]',
         'form div[contenteditable="true"]'
     ];
-    
+
     for (const sel of selectors) {
         try {
             const el = document.querySelector(sel) as HTMLElement;
@@ -916,40 +916,40 @@ async function injectAndSubmit(text: string): Promise<boolean> {
     }
 
     console.log("Gemini Project Manager [BG]: Injecting text into editor...");
-    
+
     // Focus the editor
     editor.focus();
     await delay(100);
-    
+
     // Clear existing content
     document.execCommand('selectAll', false);
     await delay(50);
-    
+
     // Insert new text
     document.execCommand('insertText', false, text);
-    
+
     // Dispatch input events for framework reactivity
     editor.dispatchEvent(new Event('input', { bubbles: true }));
     editor.dispatchEvent(new Event('change', { bubbles: true }));
     editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
-    
+
     // Wait for UI to update
     await delay(500);
-    
+
     // Try to find and click submit button
     console.log("Gemini Project Manager [BG]: Looking for submit button...");
     const submitBtn = findSubmitButton();
-    
+
     if (submitBtn) {
         console.log("Gemini Project Manager [BG]: Found submit button, clicking...");
         submitBtn.click();
         await delay(200);
         return true;
     }
-    
+
     // Fallback: try pressing Enter with Ctrl (some UIs require this)
     console.log("Gemini Project Manager [BG]: No submit button found, trying Enter key...");
-    
+
     // Try regular Enter first
     editor.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Enter',
@@ -959,9 +959,9 @@ async function injectAndSubmit(text: string): Promise<boolean> {
         bubbles: true,
         cancelable: true
     }));
-    
+
     await delay(100);
-    
+
     // Also dispatch keyup
     editor.dispatchEvent(new KeyboardEvent('keyup', {
         key: 'Enter',
@@ -970,7 +970,7 @@ async function injectAndSubmit(text: string): Promise<boolean> {
         which: 13,
         bubbles: true
     }));
-    
+
     return true;
 }
 
@@ -1000,7 +1000,7 @@ function findSubmitButton(): HTMLButtonElement | null {
         '.chat-input button',
         '.prompt-area button'
     ];
-    
+
     for (const sel of selectors) {
         try {
             let element = document.querySelector(sel);
@@ -1017,7 +1017,7 @@ function findSubmitButton(): HTMLButtonElement | null {
             // Invalid selector in this browser, skip
         }
     }
-    
+
     // Fallback: Search for buttons near the editor
     const editor = findEditor();
     if (editor) {
@@ -1030,16 +1030,16 @@ function findSubmitButton(): HTMLButtonElement | null {
                 // Skip buttons that look like close/cancel
                 const ariaLabel = buttonEl.getAttribute('aria-label')?.toLowerCase() || '';
                 const innerText = buttonEl.innerText?.toLowerCase() || '';
-                
+
                 if (ariaLabel.includes('close') || ariaLabel.includes('cancel') ||
                     innerText.includes('close') || innerText.includes('cancel')) {
                     continue;
                 }
-                
+
                 // Check for SVG (icon button) or specific styling
                 const hasSvg = buttonEl.querySelector('svg');
                 const hasIcon = buttonEl.querySelector('mat-icon, .material-icons');
-                
+
                 if ((hasSvg || hasIcon) && buttonEl.offsetParent !== null) {
                     console.log("Gemini Project Manager [BG]: Found submit button via DOM traversal");
                     return buttonEl;
@@ -1048,7 +1048,7 @@ function findSubmitButton(): HTMLButtonElement | null {
             container = container.parentElement;
         }
     }
-    
+
     console.warn("Gemini Project Manager [BG]: No submit button found");
     return null;
 }
@@ -1061,12 +1061,12 @@ function waitForResponseCompletion(maxWaitMs = 180000): Promise<string> {
         let lastResponseLength = 0;
         const checkInterval = 300; // OPTIMIZED: Faster polling (was 500ms)
         const maxChecks = maxWaitMs / checkInterval;
-        
+
         console.log("Gemini Project Manager [BG]: Starting response wait...");
-        
+
         const poller = setInterval(() => {
             totalChecks++;
-            
+
             // Check for "Stop generating" button (indicates AI is generating)
             const stopBtnSelectors = [
                 'button[aria-label*="Stop"]',
@@ -1075,23 +1075,23 @@ function waitForResponseCompletion(maxWaitMs = 180000): Promise<string> {
                 'button[data-testid*="stop"]',
                 '[aria-label*="Stop generating"]'
             ];
-            
+
             let stopBtn = null;
             for (const sel of stopBtnSelectors) {
                 stopBtn = document.querySelector(sel);
                 if (stopBtn) break;
             }
-            
+
             // Check if response content is still growing
             const currentResponse = getLastModelResponse();
             const responseGrowing = currentResponse.length > lastResponseLength + 10;
-            
+
             lastResponseLength = currentResponse.length;
 
             // Only consider "generating" if we have STRONG evidence (stop button OR response growing)
             // Loading indicators alone are too unreliable (false positives)
             const strongGeneratingSignal = stopBtn || responseGrowing;
-            
+
             if (strongGeneratingSignal) {
                 isGenerating = true;
                 idleChecks = 0; // Reset idle counter while generating
@@ -1112,9 +1112,9 @@ function waitForResponseCompletion(maxWaitMs = 180000): Promise<string> {
                     // Not generating yet
                     idleChecks++;
                     // Check if we have any response content
-                    const hasResponse = currentResponse.length > 20 && 
-                                       !currentResponse.startsWith("Error:");
-                    
+                    const hasResponse = currentResponse.length > 20 &&
+                        !currentResponse.startsWith("Error:");
+
                     if (hasResponse && idleChecks > 4) {
                         console.log("Gemini Project Manager [BG]: Found response (instant)");
                         clearInterval(poller);
@@ -1128,7 +1128,7 @@ function waitForResponseCompletion(maxWaitMs = 180000): Promise<string> {
                     }
                 }
             }
-            
+
             // Absolute timeout
             if (totalChecks >= maxChecks) {
                 console.warn("Gemini Project Manager [BG]: Absolute timeout reached");
@@ -1150,7 +1150,7 @@ function getLastModelResponse(): string {
         '[class*="model-response"]',
         '[class*="assistant-message"]'
     ];
-    
+
     for (const sel of modelResponseSelectors) {
         try {
             const elements = document.querySelectorAll(sel);
@@ -1174,7 +1174,7 @@ function getLastModelResponse(): string {
         '[class*="conversation-turn"]',
         '[class*="message-row"]'
     ];
-    
+
     for (const sel of containerSelectors) {
         try {
             const allContainers = document.querySelectorAll(sel);
@@ -1183,12 +1183,12 @@ function getLastModelResponse(): string {
                 const container = allContainers[i] as HTMLElement;
                 const author = container.getAttribute('data-message-author');
                 const classList = container.className || '';
-                
-                const isModel = author === 'model' || author === 'assistant' || 
-                               classList.includes('model') ||
-                               classList.includes('assistant') ||
-                               classList.includes('response');
-                
+
+                const isModel = author === 'model' || author === 'assistant' ||
+                    classList.includes('model') ||
+                    classList.includes('assistant') ||
+                    classList.includes('response');
+
                 if (isModel) {
                     const text = container.innerText?.trim();
                     if (text && text.length > 20) {
@@ -1202,7 +1202,7 @@ function getLastModelResponse(): string {
 
     // STRATEGY 3: Look for the main content area and find formatted text
     const mainSelectors = ['main', '[role="main"]', '.conversation-container', '#chat-container'];
-    
+
     for (const mainSel of mainSelectors) {
         const main = document.querySelector(mainSel);
         if (main) {
@@ -1236,18 +1236,18 @@ function getLastModelResponse(): string {
     const main = document.querySelector('main') || document.body;
     const textContainers = main.querySelectorAll('p, div > span, pre, code, li');
     const texts: string[] = [];
-    
+
     textContainers.forEach(el => {
         const htmlEl = el as HTMLElement;
         // Skip input areas and toolbars
         if (htmlEl.closest('[contenteditable]') || htmlEl.closest('button')) return;
-        
+
         const text = htmlEl.innerText?.trim();
         if (text && text.length > 30 && !texts.includes(text)) {
             texts.push(text);
         }
     });
-    
+
     if (texts.length > 0) {
         console.log("Gemini Project Manager [BG]: Using deep search fallback");
         return texts.slice(-5).join('\n\n');
@@ -1260,65 +1260,65 @@ function getLastModelResponse(): string {
 // This runs when we need to find a chat by title and discover its real ID
 function checkDiscoveryMode() {
     if (!isExtensionContextValid()) return;
-    
+
     const urlParams = new URLSearchParams(window.location.search);
     const isDiscoveryMode = urlParams.get('ez_discover') === 'true';
     const targetTitle = urlParams.get('ez_title');
     const hashId = urlParams.get('ez_hash_id');
-    
+
     if (!isDiscoveryMode || !targetTitle || !hashId) return;
-    
+
     console.log("Gemini Project Manager: Discovery Mode Active - Looking for:", targetTitle);
-    
+
     // Show overlay
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);color:cyan;z-index:99999;font-family:monospace;font-size:20px;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;';
     overlay.innerHTML = `<div>Gemini Project Manager</div><div>Discovering Chat...</div><div style="font-size:14px;margin-top:10px;color:#888;">"${targetTitle.substring(0, 50)}..."</div>`;
     document.body.appendChild(overlay);
-    
+
     // Wait for sidebar to load, then find and click the chat
     let attempts = 0;
     const maxAttempts = 20; // 20 * 500ms = 10 seconds
-    
+
     const findAndClickChat = () => {
         attempts++;
         overlay.innerHTML = `<div>Gemini Project Manager</div><div>Discovering Chat... (${attempts}/${maxAttempts})</div><div style="font-size:14px;margin-top:10px;color:#888;">"${targetTitle.substring(0, 50)}..."</div>`;
-        
+
         // Use findChatElement to locate the chat by title
         const chatElement = findChatElement(hashId, targetTitle);
-        
+
         if (chatElement) {
             console.log("Gemini Project Manager: Found chat element, clicking...");
-            
+
             overlay.innerHTML = `<div>Gemini Project Manager</div><div style="color:lime;">Chat Found! Navigating...</div>`;
-            
+
             // Click to navigate
             chatElement.click();
-            
+
             // Wait for navigation, then check the URL for the real ID
             setTimeout(() => {
                 const match = window.location.href.match(/\/app\/([a-zA-Z0-9_-]+)/);
                 if (match && !match[1].startsWith('chat_')) {
                     const realId = match[1];
                     console.log("Gemini Project Manager: Discovered real ID:", realId);
-                    
+
                     overlay.innerHTML = `<div>Gemini Project Manager</div><div style="color:lime;">ID Found: ${realId}</div><div>Indexing content...</div>`;
-                    
+
                     // Notify background of discovery
                     safeSendMessage({
                         type: 'DISCOVERY_COMPLETE',
                         hashId: hashId,
                         realId: realId,
                         title: targetTitle
-                    }).catch(() => {});
-                    
+                    }).catch(() => { });
+
                     // Migrate the hash ID to real ID in storage
                     storage.migrateHashToRealId(hashId, realId, targetTitle).then(() => {
                         console.log("Gemini Project Manager: Migration complete");
                     }).catch(err => {
                         console.error("Gemini Project Manager: Migration failed:", err);
                     });
-                    
+
                     // Now run the indexing flow (similar to checkIndexingMode)
                     runIndexingFlow(realId, overlay);
                 } else {
@@ -1334,29 +1334,29 @@ function checkDiscoveryMode() {
                                 hashId: hashId,
                                 realId: realId,
                                 title: targetTitle
-                            }).catch(() => {});
-                            storage.migrateHashToRealId(hashId, realId, targetTitle).catch(() => {});
+                            }).catch(() => { });
+                            storage.migrateHashToRealId(hashId, realId, targetTitle).catch(() => { });
                             runIndexingFlow(realId, overlay);
                         } else {
                             overlay.innerHTML = `<div>Gemini Project Manager</div><div style="color:red;">Failed to discover ID</div>`;
-                            safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => {});
+                            safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => { });
                         }
                     }, 3000);
                 }
             }, 2000);
-            
+
         } else if (attempts < maxAttempts) {
             // Keep trying
             setTimeout(findAndClickChat, 500);
         } else {
             console.warn("Gemini Project Manager: Could not find chat after max attempts");
             overlay.innerHTML = `<div>Gemini Project Manager</div><div style="color:red;">Chat not found in sidebar</div><div style="font-size:12px;margin-top:10px;">The chat may have been deleted or renamed.</div>`;
-            
+
             // Send archive complete to close the tab
-            safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => {});
+            safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => { });
         }
     };
-    
+
     // Start looking after sidebar has time to load
     setTimeout(findAndClickChat, 1500);
 }
@@ -1365,10 +1365,10 @@ function checkDiscoveryMode() {
 function runIndexingFlow(chatId: string, overlay: HTMLElement) {
     let stabilityTimer: any = null;
     const stabilityDuration = 3000; // Increased to 3s for more reliable detection
-    
+
     const finalizeIndexing = async () => {
         const result = scrapeChatContent();
-        
+
         if (result && result.text.length > 50) {
             overlay.innerHTML = `<div>Gemini Project Manager</div><div style="color:lime;">Indexing Complete!</div><div style="font-size:14px;">Captured ${result.turnCount} turns</div>`;
             try {
@@ -1376,22 +1376,22 @@ function runIndexingFlow(chatId: string, overlay: HTMLElement) {
             } catch (err) {
                 console.error("Gemini Project Manager: Failed to save content:", err);
             }
-            
+
             safeSendMessage({
                 type: 'ARCHIVE_COMPLETE',
                 chatId: chatId
-            }).catch(() => {});
+            }).catch(() => { });
         } else {
             console.warn("Gemini Project Manager: Indexing found no content");
             overlay.innerHTML = `<div>Gemini Project Manager</div><div style="color:orange;">No content found</div>`;
-            safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: chatId }).catch(() => {});
+            safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: chatId }).catch(() => { });
         }
     };
-    
+
     const resetStabilityTimer = () => {
         if (stabilityTimer) clearTimeout(stabilityTimer);
         overlay.innerHTML = `<div>Gemini Project Manager</div><div>Indexing content...</div>`;
-        
+
         stabilityTimer = setTimeout(() => {
             const currentContent = scrapeChatContent();
             if (currentContent && currentContent.text.length > 100) {
@@ -1405,20 +1405,20 @@ function runIndexingFlow(chatId: string, overlay: HTMLElement) {
                         finalizeIndexing();
                     } else {
                         // Give up and close
-                        safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: chatId }).catch(() => {});
+                        safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: chatId }).catch(() => { });
                     }
                 }, 2000);
             }
         }, stabilityDuration);
     };
-    
+
     // Observer for content changes
     const observer = new MutationObserver((mutations) => {
         if (mutations.some(m => m.type === 'childList' || m.type === 'characterData')) {
             resetStabilityTimer();
         }
     });
-    
+
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     resetStabilityTimer();
 }
@@ -1427,12 +1427,12 @@ function runIndexingFlow(chatId: string, overlay: HTMLElement) {
 // Listens for discovery requests from background and does discovery without opening new tabs
 function setupInPageDiscoveryListener() {
     if (!isExtensionContextValid()) return;
-    
+
     try {
         chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
             if (message.type === 'CMD_IN_PAGE_DISCOVER') {
                 console.log('Gemini Project Manager: In-page discovery requested for:', message.title);
-                
+
                 // Do discovery in this page
                 performInPageDiscovery(message.hashId, message.title);
                 sendResponse({ received: true });
@@ -1447,34 +1447,34 @@ function setupInPageDiscoveryListener() {
 async function performInPageDiscovery(hashId: string, title: string) {
     // Remember current chat ID so we can go back after indexing
     const originalChatId = getChatIdFromUrl();
-    
+
     console.log('Gemini Project Manager: Looking for chat:', title);
-    
+
     // Find the chat element by title
     const chatElement = findChatElement(hashId, title);
-    
+
     if (!chatElement) {
         console.warn('Gemini Project Manager: Could not find chat element for:', title);
         // Send completion to move queue forward
-        safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => {});
+        safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => { });
         return;
     }
-    
+
     console.log('Gemini Project Manager: Found chat, clicking to navigate...');
-    
+
     // Click to navigate
     chatElement.click();
-    
+
     // Wait for navigation and extract real ID
     await new Promise(resolve => setTimeout(resolve, 2000));
-    
+
     const newUrl = window.location.href;
     const match = newUrl.match(/\/app\/([a-zA-Z0-9_-]+)/);
-    
+
     if (match && !match[1].startsWith('chat_')) {
         const realId = match[1];
         console.log('Gemini Project Manager: Discovered real ID:', realId);
-        
+
         // Migrate hash to real ID
         try {
             await storage.migrateHashToRealId(hashId, realId, title);
@@ -1482,16 +1482,16 @@ async function performInPageDiscovery(hashId: string, title: string) {
         } catch (err) {
             console.error('Gemini Project Manager: Migration failed:', err);
         }
-        
+
         // Wait for content to load and scrape
         await new Promise(resolve => setTimeout(resolve, 3000));
-        
+
         const content = scrapeChatContent();
         if (content && content.text.length > 50) {
             await storage.updateChatContent(realId, content.text, content.turnCount);
             console.log('Gemini Project Manager: Content indexed:', content.turnCount, 'blocks');
         }
-        
+
         // Navigate back to original chat if it was different
         if (originalChatId && originalChatId !== realId) {
             console.log('Gemini Project Manager: Navigating back to original chat...');
@@ -1500,13 +1500,13 @@ async function performInPageDiscovery(hashId: string, title: string) {
                 backElement.click();
             }
         }
-        
+
         // Send completion
-        safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => {});
-        
+        safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => { });
+
     } else {
         console.warn('Gemini Project Manager: Navigation did not result in real ID');
-        safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => {});
+        safeSendMessage({ type: 'ARCHIVE_COMPLETE', chatId: hashId }).catch(() => { });
     }
 }
 
@@ -1516,5 +1516,265 @@ setTimeout(() => {
     checkDiscoveryMode(); // Check discovery mode (for tabs opened with ez_discover)
     checkIndexingMode();
     checkBackgroundChatMode();
+    setupSnippetQuickInject(); // Feature 6
+
+    // Check for default workspace prompt (Feature 5)
+    // Give it a moment for storage to be ready and editor to appear
+    setTimeout(checkWorkspaceDefault, 1000);
+
+    // Re-check on navigation
+    window.addEventListener('popstate', () => {
+        setTimeout(checkWorkspaceDefault, 1000);
+    });
 }, 2000);
+
+// --- Feature 5: Workspace Default Context ---
+async function checkWorkspaceDefault() {
+    if (!isExtensionContextValid()) return;
+
+    // Only run if we are on a "New Chat" page
+    // Gemini URLs: /app (new), /app/ID (existing)
+    const isNewChat = window.location.pathname === '/app' || window.location.pathname === '/' || window.location.pathname.endsWith('/app');
+
+    if (!isNewChat) return;
+
+    try {
+        const data = await storage.get();
+        if (!data.activeWorkspaceId) return;
+
+        const workspace = data.workspaces.find(w => w.id === data.activeWorkspaceId);
+        if (workspace && workspace.defaultPrompt) {
+            const editor = await waitForEditor(10); // Check quickly
+            if (editor) {
+                // Only inject if empty
+                if (!editor.innerText.trim()) {
+                    console.log("Gemini Project Manager: Injecting Workspace Default Prompt");
+                    injectPrompt(workspace.defaultPrompt);
+                }
+            }
+        }
+    } catch (err) {
+        console.error("Gemini Project Manager: Failed to inject default prompt", err);
+    }
+}
+
+// --- Feature 6: Quick Context Injection (@ snippets) ---
+function setupSnippetQuickInject() {
+    let snippetPopup: HTMLElement | null = null;
+    let activeIndex = 0;
+    let filteredSnippets: any[] = [];
+    let lastAtPos = { x: 0, y: 0 };
+    let lastSemiTime = 0; // Track double-semicolon
+
+    // Create Popup
+    const createPopup = () => {
+        if (snippetPopup) return snippetPopup;
+        const el = document.createElement('div');
+        el.className = 'ez-snippet-popup';
+        el.style.cssText = `
+            position: fixed;
+            z-index: 99999;
+            background: #1e1f20;
+            border: 1px solid #444746;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            width: 300px;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+            color: #e3e3e3;
+            font-family: 'Google Sans', sans-serif;
+            font-size: 14px;
+        `;
+        document.body.appendChild(el);
+        snippetPopup = el;
+        return el;
+    };
+
+    const hidePopup = () => {
+        if (snippetPopup) snippetPopup.style.display = 'none';
+        activeIndex = 0;
+    };
+
+    const insertSnippet = (content: string) => {
+        const editor = findEditor();
+        if (editor) {
+            // Only focus if we don't have it (though onmousedown prevents blur, it's safe to check)
+            if (document.activeElement !== editor) {
+                editor.focus();
+            }
+
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount > 0) {
+                // Check if we can find ';;' immediately before cursor
+                const anchorNode = selection.anchorNode;
+                const anchorOffset = selection.anchorOffset;
+
+                let rangeToReplace: Range | null = null;
+
+                if (anchorNode && anchorNode.nodeType === Node.TEXT_NODE) {
+                    const text = anchorNode.textContent || '';
+                    if (anchorOffset >= 2) {
+                        const prevTwo = text.substring(anchorOffset - 2, anchorOffset);
+                        if (prevTwo === ';;') {
+                            rangeToReplace = document.createRange();
+                            rangeToReplace.setStart(anchorNode, anchorOffset - 2);
+                            rangeToReplace.setEnd(anchorNode, anchorOffset);
+                        }
+                    }
+                }
+
+                if (rangeToReplace) {
+                    // Select the range to replace so insertText overwrites it
+                    selection.removeAllRanges();
+                    selection.addRange(rangeToReplace);
+                } else {
+                    // Fallback: If we can't confirm ';;' is there, just insert.
+                    // DO NOT DELETE blindly, as that risks deleting user content if cursor moved.
+                    // Better to leave ';;' than delete 'Hello World'.
+                    console.warn("Gemini Project Manager: Could not find ';;' at cursor. Inserting content without deletion.");
+                }
+            }
+
+            // Insert new content (replaces selection if we set it)
+            document.execCommand('insertText', false, content);
+        }
+        hidePopup();
+    };
+
+    const renderSnippets = (snippets: any[]) => {
+        if (!snippetPopup) return;
+        if (snippets.length === 0) {
+            hidePopup();
+            return;
+        }
+
+        snippetPopup.innerHTML = '';
+        snippets.forEach((s, idx) => {
+            const item = document.createElement('div');
+            item.style.cssText = `
+                padding: 8px 12px;
+                cursor: pointer;
+                border-bottom: 1px solid #2d2e2f;
+                ${idx === activeIndex ? 'background: #004a77;' : 'hover:background: #2d2e2f;'}
+            `;
+            item.innerHTML = `
+                <div style="font-weight: 500;">${s.title}</div>
+                <div style="font-size: 12px; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${s.content}</div>
+            `;
+
+            // KEY FIX: Use onmousedown + preventDefault to keep focus on editor!
+            item.onmousedown = (e) => {
+                e.preventDefault(); // Stop focus loss
+                e.stopPropagation();
+                insertSnippet(s.content);
+            };
+
+            snippetPopup!.appendChild(item);
+        });
+        snippetPopup.style.display = 'block';
+
+        // ... (positioning logic unchanged) ...
+
+        // Position near cursor (approx) or center
+        // If we captured coordinates:
+        if (lastAtPos.x > 0) {
+            snippetPopup.style.left = `${lastAtPos.x}px`;
+            snippetPopup.style.top = `${lastAtPos.y - snippetPopup.offsetHeight - 10}px`;
+        } else {
+            // Center bottom
+            const editor = findEditor();
+            if (editor) {
+                const rect = editor.getBoundingClientRect();
+                snippetPopup.style.left = `${rect.left}px`;
+                snippetPopup.style.bottom = `${window.innerHeight - rect.top + 10}px`;
+            }
+        }
+    };
+
+    // Listen for input
+    document.addEventListener('keyup', async (e) => {
+        const target = e.target as HTMLElement;
+        const isEditor = target.getAttribute('contenteditable') === 'true' || target.role === 'textbox';
+
+        if (!isEditor) return;
+
+        // If popup is open, handle navigation
+        if (snippetPopup && snippetPopup.style.display !== 'none') {
+            if (e.key === 'ArrowDown') {
+                activeIndex = (activeIndex + 1) % filteredSnippets.length;
+                renderSnippets(filteredSnippets);
+                e.preventDefault();
+                return;
+            } else if (e.key === 'ArrowUp') {
+                activeIndex = (activeIndex - 1 + filteredSnippets.length) % filteredSnippets.length;
+                renderSnippets(filteredSnippets);
+                e.preventDefault();
+                return;
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (filteredSnippets[activeIndex]) {
+                    insertSnippet(filteredSnippets[activeIndex].content);
+                }
+                return;
+            } else if (e.key === 'Escape') {
+                hidePopup();
+                return;
+            }
+        }
+
+        // Logic to detect ';;' trigger sequence
+        if (e.key === ';') {
+            const now = Date.now();
+            if (lastSemiTime && (now - lastSemiTime < 500)) {
+                // Double semicolon detected!
+
+                // Save position
+                const selection = window.getSelection();
+                if (selection && selection.rangeCount) {
+                    const range = selection.getRangeAt(0);
+                    const rect = range.getBoundingClientRect();
+                    lastAtPos = { x: rect.left, y: rect.top };
+                }
+
+                // Load snippets
+                const data = await storage.get();
+                if (data.snippets && data.snippets.length > 0) {
+                    filteredSnippets = data.snippets;
+                    createPopup();
+                    renderSnippets(filteredSnippets);
+                }
+
+                lastSemiTime = 0; // Reset
+                return;
+            }
+            lastSemiTime = now;
+        } else {
+            // Reset if any other key
+            lastSemiTime = 0;
+        }
+
+        // Filtering
+        if (snippetPopup && snippetPopup.style.display !== 'none') {
+            // Extract query text after @
+            // Find text from last @ position?
+            // Simplification: just show all snippets for now when @ is recently typed.
+            // Real implementation would parse the text.
+            // Just filtering by "Space" or "Escape" to close.
+            if (e.key === ' ' || e.key === 'Escape') {
+                hidePopup();
+            }
+        }
+    });
+
+    // Close popup when clicking outside
+    document.addEventListener('click', (e) => {
+        if (snippetPopup && snippetPopup.style.display !== 'none') {
+            if (!snippetPopup.contains(e.target as Node)) {
+                hidePopup();
+            }
+        }
+    });
+}
 

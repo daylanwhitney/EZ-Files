@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Trash2, MessageSquare, Plus, Folder as FolderIcon, ChevronRight, ChevronDown, Pencil, Search } from 'lucide-react';
+import { Trash2, MessageSquare, Plus, Folder as FolderIcon, ChevronRight, ChevronDown, Pencil, Search, FileDown, Tag, Pin } from 'lucide-react';
 import FolderChat from './FolderChat';
 import { useProjects } from '../hooks/useProjects';
 import { useActiveChat } from '../hooks/useActiveChat';
@@ -20,7 +20,6 @@ export default function ProjectList() {
     const [searchQuery, setSearchQuery] = useState('');
 
     // --- Active Chat Detection (Title-Based) ---
-    // Use the useActiveChat hook to get the active chat title from Gemini's DOM
     const { activeTitle } = useActiveChat();
 
     // Helper to normalize titles for comparison
@@ -35,13 +34,9 @@ export default function ProjectList() {
             const storedNorm = normalize(chat.title);
             const activeNorm = normalize(activeTitle);
 
-            // Exact match
             if (storedNorm === activeNorm) return true;
-
-            // One contains the other (handles truncation)
             if (storedNorm.includes(activeNorm) || activeNorm.includes(storedNorm)) return true;
 
-            // First N characters match (handles long titles that get truncated)
             const minLen = Math.min(storedNorm.length, activeNorm.length, 20);
             if (minLen >= 5 && storedNorm.substring(0, minLen) === activeNorm.substring(0, minLen)) return true;
 
@@ -60,30 +55,37 @@ export default function ProjectList() {
     const workspaceFolders = folders.filter(f => f.workspaceId === activeWorkspaceId);
     let filteredFolders: (Folder & { _forceExpand?: boolean })[] = workspaceFolders;
 
-    // Only filter if there is a search query
     if (searchQuery.trim()) {
+        const isTagSearch = searchQuery.startsWith('#');
+        const query = isTagSearch ? searchQuery.slice(1).toLowerCase() : searchQuery.toLowerCase();
+
         filteredFolders = workspaceFolders.map(folder => {
-            // 1. If folder name matches search, keep it and show all its chats
-            if (folder.name.toLowerCase().includes(searchQuery.toLowerCase())) {
+            // 1. If folder name matches search (only if NOT tag search), keep it and show all its chats
+            if (!isTagSearch && folder.name.toLowerCase().includes(query)) {
                 return { ...folder, _forceExpand: true };
             }
 
-            // 2. Otherwise, check if any CHATS inside match the search
+            // 2. Filter chats
             const matchingChatIds = folder.chatIds.filter(chatId => {
                 const chat = chats[chatId];
-                return chat && chat.title.toLowerCase().includes(searchQuery.toLowerCase());
+                if (!chat) return false;
+
+                if (isTagSearch) {
+                    return chat.tags?.some(t => t.toLowerCase().includes(query));
+                } else {
+                    return chat.title.toLowerCase().includes(query);
+                }
             });
 
-            // If we found matching chats, return a folder copy with ONLY those chats
             if (matchingChatIds.length > 0) {
                 return {
                     ...folder,
                     chatIds: matchingChatIds,
-                    _forceExpand: true // Expand to show results
+                    _forceExpand: true
                 };
             }
 
-            return null; // Hide folder
+            return null;
         }).filter(Boolean) as (Folder & { _forceExpand?: boolean })[];
     }
 
@@ -179,8 +181,6 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
     // Use an effect to sync expansion state when forceExpand or hasActiveChat changes
     const [isExpanded, setIsExpanded] = useState(folder.collapsed ? false : true);
 
-
-
     // Filter chats in this folder to get their data
     const folderChats = folder.chatIds.map(id => allChats[id]).filter(Boolean);
 
@@ -191,30 +191,24 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
 
     useEffect(() => {
         if (forceExpand || hasActiveChat) setIsExpanded(true);
-    }, [forceExpand, hasActiveChat, folder.id]); // Added folder.id dependency just in case
+    }, [forceExpand, hasActiveChat, folder.id]);
 
     // Folder Chat State
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [chatMessages, setChatMessages] = useState<{ id: string, role: 'user' | 'assistant', text: string, timestamp: number }[]>([]);
     const [isChatLoading, setIsChatLoading] = useState(false);
 
-    // Initial load of messages? (Could persist later)
-
     const handleChatWithFolder = async (e: React.MouseEvent) => {
         e.stopPropagation();
-        // Toggle view
         setIsChatOpen(!isChatOpen);
     };
 
     const handleSendMessage = async (text: string) => {
-        // 1. Add user message
         const userMsg = { id: Date.now().toString(), role: 'user' as const, text, timestamp: Date.now() };
         setChatMessages(prev => [...prev, userMsg]);
         setIsChatLoading(true);
 
         try {
-            // 2. Compile Context if first message (or simply always send it and let background handle dedup)
-            // Ideally we only send context ONCE per session.
             let context = "";
             if (chatMessages.length === 0) {
                 context = `CONTEXT FROM FOLDER: "${folder.name}"\n\n`;
@@ -225,7 +219,6 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                 });
             }
 
-            // 3. Send to Background
             const response = await chrome.runtime.sendMessage({
                 type: 'CMD_FOLDER_CHAT_SEND',
                 folderId: folder.id,
@@ -233,7 +226,6 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                 context: context ? context : undefined
             });
 
-            // 4. Add AI response
             if (response && response.success) {
                 const aiMsg = { id: (Date.now() + 1).toString(), role: 'assistant' as const, text: response.text, timestamp: Date.now() };
                 setChatMessages(prev => [...prev, aiMsg]);
@@ -269,6 +261,22 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
         if (confirm(`Are you sure you want to delete folder "${folder.name}" ? `)) {
             onDelete();
         }
+    };
+
+    const handleExport = () => {
+        let md = `# Folder: ${folder.name}\n\n`;
+        folderChats.forEach(chat => {
+            md += `## ${chat.title}\n\n${chat.content || '(No content synced)'}\n\n---\n\n`;
+        });
+        const blob = new Blob([md], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${folder.name.replace(/\s+/g, '_')}-report.md`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     };
 
     // --- Drag and Drop Handlers ---
@@ -321,7 +329,6 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                 if (data.id && data.title) {
                     onAddChat(folder.id, data);
 
-                    // Check if needs indexing - if content is missing, queue it up
                     const existingChat = allChats[data.id];
                     const needsIndexing = !existingChat || !existingChat.content;
                     if (needsIndexing) {
@@ -329,7 +336,7 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                         chrome.runtime.sendMessage({
                             type: 'CMD_INDEX_CHAT',
                             chatId: data.id,
-                            title: data.title // Include title for discovery mode
+                            title: data.title
                         });
                     }
                 }
@@ -351,8 +358,6 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
             console.error("Gemini Project Manager: Failed to handle drop:", err);
         }
     };
-
-
 
     return (
         <div
@@ -385,7 +390,7 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                     ) : (
                         <div className="flex items-center gap-2">
                             <span className="text-sm truncate select-none cursor-pointer">{folder.name}</span>
-                            {/* NEW: Sync Status Indicator */}
+                            {/* Sync Status Indicator */}
                             {totalChats > 0 && (
                                 <span className={`text-[10px] px-1 rounded ${isFullySynced ? 'bg-green-900/50 text-green-400' : 'bg-yellow-900/50 text-yellow-400'}`} title={`${syncedChats}/${totalChats} chats indexed`}>
                                     {syncedChats}/{totalChats}
@@ -408,13 +413,20 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                             <Pencil size={12} />
                         </button>
 
-                        {/* NEW: Chat with Folder Button */}
                         <button
                             onClick={handleChatWithFolder}
                             className={`p-1 rounded transition-all ${isChatOpen ? 'text-blue-400' : 'hover:text-blue-400 hover:bg-gray-700'}`}
                             title="Chat with Folder Context"
                         >
                             <MessageSquare size={12} />
+                        </button>
+
+                        <button
+                            onClick={handleExport}
+                            className="p-1 hover:text-green-400 hover:bg-gray-700 rounded transition-all"
+                            title="Export to Markdown"
+                        >
+                            <FileDown size={12} />
                         </button>
 
                         <button
@@ -459,11 +471,10 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                     folderId={folder.id}
                     onClose={() => {
                         setIsChatOpen(false);
-                        // Notify background to close the session (allows cleanup)
-                        chrome.runtime.sendMessage({ 
-                            type: 'CMD_CLOSE_FOLDER_CHAT', 
-                            folderId: folder.id 
-                        }).catch(() => {});
+                        chrome.runtime.sendMessage({
+                            type: 'CMD_CLOSE_FOLDER_CHAT',
+                            folderId: folder.id
+                        }).catch(() => { });
                     }}
                     messages={chatMessages}
                     onSendMessage={handleSendMessage}
@@ -481,8 +492,8 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                                 <ChatItem
                                     key={chatId}
                                     chatId={chatId}
-                                    chatData={allChats[chatId]} // Pass data directly
-                                    isActive={chatId === activeChatId} // Pass active state
+                                    chatData={allChats[chatId]}
+                                    isActive={chatId === activeChatId}
                                     onRemove={() => onRemoveChat(chatId)}
                                 />
                             ))
@@ -500,15 +511,12 @@ function ChatItem({ chatId, chatData, isActive, onRemove }: {
     isActive: boolean;
     onRemove: () => void
 }) {
-    // If chatData is missing (rare), try to fetch or wait. 
-    // In search mode, we pass it down. In normal mode, we might rely on it being there.
     const [localChat, setLocalChat] = useState<Chat | null>(chatData || null);
 
     useEffect(() => {
         if (chatData) {
             setLocalChat(chatData);
         } else {
-            // Fallback fetch if not passed (legacy support or race condition)
             chrome.storage.local.get(['chats']).then((res) => {
                 const result = res as unknown as StorageData;
                 if (result.chats && result.chats[chatId]) {
@@ -528,9 +536,23 @@ function ChatItem({ chatId, chatData, isActive, onRemove }: {
         if (sidebarEl) {
             sidebarEl.click();
         } else {
-            // Fallback navigation
             window.location.href = localChat.url;
         }
+    };
+
+    const handleEditTags = async () => {
+        const currentTags = localChat?.tags?.join(', ') || '';
+        const newTagsStr = prompt("Edit Tags (comma separated, e.g. finance, urgent):", currentTags);
+        if (newTagsStr !== null) {
+            const tags = newTagsStr.split(',').map(t => t.trim()).filter(Boolean);
+            await storage.updateChatTags(chatId, tags);
+            if (localChat) setLocalChat({ ...localChat, tags });
+        }
+    };
+
+    const handleTogglePin = async () => {
+        await storage.toggleChatPin(chatId);
+        if (localChat) setLocalChat({ ...localChat, pinned: !localChat.pinned });
     };
 
     if (!localChat) return <div className="text-xs text-gray-500 py-0.5 px-2">Loading...</div>;
@@ -546,25 +568,55 @@ function ChatItem({ chatId, chatData, isActive, onRemove }: {
             onClick={handleNavigation}
             title={localChat.title}
         >
-            <span className="truncate flex-1">{localChat.title}</span>
+            <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                <span className="truncate">{localChat.title}</span>
+                {localChat.tags && localChat.tags.length > 0 && (
+                    <div className="flex gap-1 flex-wrap">
+                        {localChat.tags.map(tag => (
+                            <span key={tag} className="text-[10px] bg-blue-500/20 text-blue-300 px-1 rounded-sm">#{tag}</span>
+                        ))}
+                    </div>
+                )}
+            </div>
 
-            {/* Sync Icon */}
-            {(!localChat.content || localChat.content.length === 0) && (
-                <span className="text-[10px] text-yellow-600 mr-2" title="Not Indexed (Open chat to sync)">
-                    ●
-                </span>
-            )}
+            <div className="flex items-center">
+                {(!localChat.content || localChat.content.length === 0) && (
+                    <span className="text-[10px] text-yellow-600 mr-2" title="Not Indexed (Open chat to sync)">
+                        ●
+                    </span>
+                )}
 
-            <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        if (confirm('Remove chat from project?')) onRemove();
-                    }}
-                    className="p-0.5 hover:text-red-400"
-                >
-                    <Trash2 size={10} />
-                </button>
+                <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity gap-1">
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            handleTogglePin();
+                        }}
+                        className={`p-0.5 hover:text-blue-400 ${localChat.pinned ? 'text-blue-400' : ''}`}
+                        title={localChat.pinned ? "Unpin Chat" : "Pin to Reference Panel"}
+                    >
+                        <Pin size={10} />
+                    </button>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditTags();
+                        }}
+                        className="p-0.5 hover:text-blue-400"
+                        title="Edit Tags"
+                    >
+                        <Tag size={10} />
+                    </button>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm('Remove chat from project?')) onRemove();
+                        }}
+                        className="p-0.5 hover:text-red-400"
+                    >
+                        <Trash2 size={10} />
+                    </button>
+                </div>
             </div>
         </div>
     );
@@ -583,7 +635,6 @@ function getGeminiTitle() {
         if (el && el.textContent) return el.textContent.trim();
     }
 
-    // Fallback
     const docTitle = document.title.replace(/ - Google Gemini$/, '').trim();
     if (docTitle && docTitle !== 'Google Gemini') return docTitle;
 

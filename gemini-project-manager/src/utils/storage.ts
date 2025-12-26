@@ -1,10 +1,11 @@
-import type { Folder, Chat, StorageData, Workspace } from '../types';
+import type { Folder, Chat, StorageData, Workspace, Snippet } from '../types';
 
 const DEFAULT_DATA: StorageData = {
     workspaces: [],
     activeWorkspaceId: '',
     folders: [],
     chats: {},
+    snippets: [],
     settings: { theme: 'dark' },
 };
 
@@ -39,17 +40,17 @@ export const storage = {
     migrateHashToRealId: async (hashId: string, realId: string, title: string): Promise<boolean> => {
         return withStorageLock(async () => {
             const data = await storage.get();
-            
+
             // Check if hash-based chat exists
             if (!data.chats[hashId]) {
                 return false;
             }
-            
+
             console.log(`Gemini Project Manager: Migrating hash ID ${hashId} to real ID ${realId}`);
-            
+
             // Get the hash-based chat data
             const hashChat = data.chats[hashId];
-            
+
             // Create or update the real chat entry
             const realChat = data.chats[realId] || {};
             data.chats[realId] = {
@@ -61,7 +62,7 @@ export const storage = {
                 content: realChat.content || hashChat.content, // Preserve any existing content
                 turnCount: realChat.turnCount || hashChat.turnCount
             };
-            
+
             // Update all folders: replace hashId with realId
             const updatedFolders = data.folders.map(folder => {
                 if (folder.chatIds.includes(hashId)) {
@@ -74,10 +75,10 @@ export const storage = {
                 }
                 return folder;
             });
-            
+
             // Delete the hash-based chat entry
             delete data.chats[hashId];
-            
+
             await storage.save({ folders: updatedFolders, chats: data.chats });
             console.log(`Gemini Project Manager: Migration complete. Folders updated.`);
             return true;
@@ -90,13 +91,13 @@ export const storage = {
     findHashChatByTitle: async (title: string): Promise<{ id: string; chat: any } | null> => {
         const data = await storage.get();
         const normalizedTitle = title.toLowerCase().trim();
-        
+
         for (const [id, chat] of Object.entries(data.chats)) {
             if (id.startsWith('chat_') && chat.title) {
                 const chatTitleNorm = chat.title.toLowerCase().trim();
                 // Check for exact match or one contains the other
-                if (chatTitleNorm === normalizedTitle || 
-                    chatTitleNorm.includes(normalizedTitle) || 
+                if (chatTitleNorm === normalizedTitle ||
+                    chatTitleNorm.includes(normalizedTitle) ||
                     normalizedTitle.includes(chatTitleNorm)) {
                     return { id, chat };
                 }
@@ -137,6 +138,7 @@ export const storage = {
 
                 const migratedData: StorageData = {
                     chats: (result.chats || {}) as Record<string, Chat>,
+                    snippets: [],
                     settings: (result.settings || { theme: 'dark' }) as { theme: 'dark' | 'light' },
                     workspaces: [defaultWorkspace],
                     activeWorkspaceId: defaultId,
@@ -351,5 +353,54 @@ export const storage = {
         updatedFolders[toFolderIndex] = { ...toFolder, chatIds: newToChatIds };
 
         await storage.save({ folders: updatedFolders });
+    },
+
+    // --- FEATURE 1: SNIPPETS ---
+    addSnippet: async (title: string, content: string) => {
+        const data = await storage.get();
+        const newSnippet: Snippet = {
+            id: crypto.randomUUID(),
+            title,
+            content,
+            timestamp: Date.now()
+        };
+        // Ensure snippets array exists (migration safety)
+        const snippets = data.snippets || [];
+        await storage.save({ snippets: [...snippets, newSnippet] });
+    },
+
+    deleteSnippet: async (id: string) => {
+        const data = await storage.get();
+        const snippets = (data.snippets || []).filter(s => s.id !== id);
+        await storage.save({ snippets });
+    },
+
+    // --- FEATURE 2: TAGS ---
+    updateChatTags: async (chatId: string, tags: string[]) => {
+        const data = await storage.get();
+        const chat = data.chats[chatId];
+        if (!chat) return;
+
+        const updatedChat = { ...chat, tags };
+        const updatedChats = { ...data.chats, [chatId]: updatedChat };
+        await storage.save({ chats: updatedChats });
+    },
+
+    toggleChatPin: async (chatId: string) => {
+        const data = await storage.get();
+        const chat = data.chats[chatId];
+        if (!chat) return;
+
+        const updatedChat = { ...chat, pinned: !chat.pinned };
+        await storage.save({ chats: { ...data.chats, [chatId]: updatedChat } });
+    },
+
+    // --- FEATURE 5: WORKSPACE DEFAULTS ---
+    updateWorkspaceDefaultPrompt: async (workspaceId: string, prompt: string) => {
+        const data = await storage.get();
+        const workspaces = data.workspaces.map(w =>
+            w.id === workspaceId ? { ...w, defaultPrompt: prompt } : w
+        );
+        await storage.save({ workspaces });
     }
 };
