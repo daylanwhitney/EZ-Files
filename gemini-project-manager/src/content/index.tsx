@@ -1,11 +1,7 @@
-import React from 'react';
-import { createRoot } from 'react-dom/client';
-import Sidebar from '../components/Sidebar';
-import styleText from '../index.css?inline';
+// React and createRoot removed as no longer rendering UI
+import { scrapeChatContent, findChatElement, injectPrompt } from '../utils/dom';
 
 console.log("Gemini Project Manager: Content Script Loaded");
-
-const ROOT_ID = 'gemini-project-manager-root';
 
 // Helper to check if extension context is still valid
 function isExtensionContextValid(): boolean {
@@ -21,7 +17,7 @@ function isExtensionContextValid(): boolean {
 function safeSendMessage(message: any): Promise<any> {
     return new Promise((resolve, reject) => {
         if (!isExtensionContextValid()) {
-            console.warn("Gemini Project Manager: Extension context invalidated, skipping message");
+            console.debug("Gemini Project Manager: Extension context invalidated, skipping message");
             reject(new Error("Extension context invalidated"));
             return;
         }
@@ -39,229 +35,249 @@ function safeSendMessage(message: any): Promise<any> {
     });
 }
 
-// SVG for the Projects folder icon
+// --- Theme Detection ---
+function isLightMode(): boolean {
+    // Strategy 1: Check body background color
+    const bodyBg = window.getComputedStyle(document.body).backgroundColor;
+    if (bodyBg) {
+        // Parse RGB values
+        const match = bodyBg.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (match) {
+            const [, r, g, b] = match.map(Number);
+            // Light mode if average RGB > 128
+            const brightness = (r + g + b) / 3;
+            if (brightness > 128) return true;
+            if (brightness < 80) return false;
+        }
+    }
+
+    // Strategy 2: Check for dark theme classes on body or html
+    const htmlClasses = document.documentElement.className.toLowerCase();
+    const bodyClasses = document.body.className.toLowerCase();
+    if (htmlClasses.includes('dark') || bodyClasses.includes('dark')) return false;
+    if (htmlClasses.includes('light') || bodyClasses.includes('light')) return true;
+
+    // Strategy 3: Check prefers-color-scheme
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+        return true;
+    }
+
+    // Default to dark (Gemini default)
+    return false;
+}
+
+// --- Projects Button ---
+// --- Projects Button ---
 const FOLDER_ICON = `
-<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
     <path fill-rule="evenodd" clip-rule="evenodd" d="M20 4H12L10 2H4C2.9 2 2.01 2.9 2.01 4L2 20C2 21.1 2.9 22 4 22H20C21.1 22 22 21.1 22 20V6C22 4.9 21.1 4 20 4ZM20 20H4V6H20V20Z" />
 </svg>
 `;
 
-function createSidebarButton(isFallback = false) {
-    const button = document.createElement('div');
-    button.className = "ez-projects-btn";
+function createProjectsButton(referenceElement?: HTMLElement): HTMLElement {
+    const isLight = isLightMode();
 
-    if (isFallback) {
-        // Floating button style if sidebar isn't found
+    const button = document.createElement('button');
+    button.className = 'ez-projects-btn';
+    button.setAttribute('type', 'button');
+
+    // If we have a reference element, copy its styles
+    if (referenceElement) {
+        const refStyle = window.getComputedStyle(referenceElement);
         button.style.cssText = `
-            position: fixed;
-            top: 80px;
-            left: 20px;
-            z-index: 9998;
-            background-color: #1e1f20;
-            color: #e3e3e3;
-            border-radius: 50%;
-            width: 48px;
-            height: 48px;
             display: flex;
             align-items: center;
-            justify-content: center;
+            gap: ${refStyle.gap || '12px'};
+            padding: ${refStyle.padding || '12px 24px'};
+            margin: ${refStyle.margin || '0'};
+            width: 100%;
             cursor: pointer;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            transition: transform 0.2s;
-            border: 1px solid #444746;
+            border: none;
+            background: transparent;
+            border-radius: ${refStyle.borderRadius || '0 9999px 9999px 0'};
+            color: ${refStyle.color || (isLight ? '#1f2937' : '#c4c7c5')};
+            font-family: ${refStyle.fontFamily || "'Google Sans', Roboto, sans-serif"};
+            font-size: ${refStyle.fontSize || '14px'};
+            font-weight: ${refStyle.fontWeight || '500'};
+            text-align: left;
+            transition: background-color 0.2s, color 0.2s;
+            box-sizing: border-box;
+            line-height: ${refStyle.lineHeight || 'normal'};
+            letter-spacing: ${refStyle.letterSpacing || 'normal'};
         `;
-        button.innerHTML = FOLDER_ICON;
-        button.title = "Projects (Fallback Mode)";
     } else {
-        // Native sidebar style
+        // Fallback styles
         button.style.cssText = `
             display: flex;
             align-items: center;
             gap: 12px;
-            padding: 10px 16px;
-            margin: 4px 0;
+            padding: 12px 24px;
+            margin: 0;
+            width: 100%;
             cursor: pointer;
-            border-radius: 9999px;
-            color: #e3e3e3;
+            border: none;
+            background: transparent;
+            border-radius: 0 9999px 9999px 0;
+            color: ${isLight ? '#1f2937' : '#c4c7c5'};
             font-family: 'Google Sans', Roboto, sans-serif;
             font-size: 14px;
             font-weight: 500;
-            transition: background-color 0.2s;
+            text-align: left;
+            transition: background-color 0.2s, color 0.2s;
+            box-sizing: border-box;
         `;
-        button.innerHTML = `
-            <span style="display: flex; align-items: center; justify-content: center;">${FOLDER_ICON}</span>
-            <span style="flex: 1;">Projects</span>
-        `;
-        button.addEventListener('mouseenter', () => {
-            button.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
-        });
-        button.addEventListener('mouseleave', () => {
-            button.style.backgroundColor = 'transparent';
-        });
     }
 
-    button.addEventListener('click', () => {
-        window.dispatchEvent(new CustomEvent('ez-files-toggle'));
+    button.innerHTML = `
+        <span style="display: flex; align-items: center; justify-content: center; width: 24px; height: 24px;">${FOLDER_ICON}</span>
+        <span>Projects</span>
+    `;
+
+    // Hover effects matching Gemini's style
+    button.addEventListener('mouseenter', () => {
+        button.style.backgroundColor = isLight ? '#e8eaed' : '#37393b';
+    });
+    button.addEventListener('mouseleave', () => {
+        button.style.backgroundColor = 'transparent';
+    });
+
+    // Click opens the Side Panel
+    button.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+            await chrome.runtime.sendMessage({ type: 'CMD_OPEN_SIDE_PANEL' });
+        } catch (err) {
+            console.error("Gemini Project Manager: Failed to open Side Panel", err);
+        }
     });
 
     return button;
 }
 
-import { deepQuerySelectorAll, getParents, scrapeChatContent, findChatElement, injectPrompt } from '../utils/dom';
-
-// Keep track of retry attempts to trigger fallback
-let retryCount = 0;
-const MAX_RETRIES = 20; // 20 attempts * 500ms debounce ~= 10 seconds before fallback
-
-// Helper to find the sidebar container
-function findSidebarContainer(): HTMLElement | null {
-    // Strategy: Find "New Chat" and "Chats" (or "Recent") to define the sidebar bounds
-    // CRITICAL: Must use deep search because these might be inside Shadow DOM
-    const allSpans = deepQuerySelectorAll(document.body, 'span');
-
-    // 1. Find anchor points
-    const newChatSpan = allSpans.find(el => el.textContent?.trim() === 'New chat' || el.textContent?.trim() === 'New Chat');
-    const chatsSpan = allSpans.find(el => el.textContent?.trim() === 'Chats' || el.textContent?.trim() === 'Recent');
-    const recentSpan = allSpans.find(el => el.textContent?.trim() === 'Recent');
-
-    let targetContainer: HTMLElement | null = null;
-
-    // 2. Identify likely sidebar container using Least Common Ancestor (LCA)
-    if (newChatSpan && (chatsSpan || recentSpan)) {
-        const otherSpan = chatsSpan || recentSpan;
-        const parents1 = getParents(newChatSpan!);
-        const parents2 = getParents(otherSpan!);
-
-        // Find the first common parent
-        targetContainer = parents1.find(p => parents2.includes(p)) || null;
-    }
-
-    // Fallback if LCA failed: try to find container of New Chat alone
-    if (!targetContainer && newChatSpan) {
-        // Go up 3-4 levels, looking for a flex col
-        let curr = newChatSpan.parentElement;
-        for (let i = 0; i < 5; i++) {
-            if (curr && window.getComputedStyle(curr).display === 'flex' && window.getComputedStyle(curr).flexDirection === 'column') {
-                targetContainer = curr;
-                break;
-            }
-            curr = curr?.parentElement || null;
-        }
-    }
-
-    // Strategy 3: Main nav selector fallback
-    if (!targetContainer) {
-        targetContainer = document.querySelector('nav') || null;
-    }
-
-    return targetContainer;
-}
 function findAndInjectButton() {
-    // Check if we already injected
+    // Check if already injected
     if (document.querySelector('.ez-projects-btn')) return;
 
-    let targetContainer = findSidebarContainer();
+    // Find key elements in the sidebar to determine insertion point and copy styles
+    const allElements = document.querySelectorAll('*');
+    let myStuffElement: HTMLElement | null = null;
+    let myStuffClickable: HTMLElement | null = null;
+    let newChatElement: HTMLElement | null = null;
+    let newChatClickable: HTMLElement | null = null;
 
-    if (targetContainer) {
-        // Strategy: Try to find a reference element to copy styles from
-        // We prefer 'New chat' as it's the primary main button usually
-        const newChatSpan = Array.from(document.querySelectorAll('span')).find(el => el.textContent?.trim() === 'New chat' || el.textContent?.trim() === 'New Chat');
-        let referenceEl = newChatSpan ? newChatSpan.closest('div[role="button"]') || newChatSpan.parentElement : null;
+    for (const el of allElements) {
+        const text = el.textContent?.trim();
+        // Must be a leaf node or near-leaf (avoid matching parent containers)
+        if (el.children.length > 3) continue;
 
-        // If we can't find New Chat button specifically, try to use the first child of the container
-        if (!referenceEl && targetContainer.children.length > 0) {
-            referenceEl = targetContainer.children[0] as HTMLElement;
+        if (text === 'My Stuff' && !myStuffElement) {
+            myStuffElement = el as HTMLElement;
+            // Find the clickable parent (button or anchor)
+            myStuffClickable = el.closest('button, a, [role="button"]') as HTMLElement;
+            console.log("Gemini Project Manager: Found My Stuff element:", el.tagName, myStuffClickable);
         }
-
-        const btn = createSidebarButton(false);
-
-        // Apply dynamic styles if reference element exists
-        if (referenceEl instanceof HTMLElement) {
-            const style = window.getComputedStyle(referenceEl);
-
-            // Copy key layout properties
-            btn.style.paddingLeft = style.paddingLeft;
-            btn.style.paddingRight = style.paddingRight; // Keep symmetry
-            btn.style.marginLeft = style.marginLeft;
-            btn.style.marginRight = style.marginRight;
-            btn.style.width = style.width !== 'auto' ? style.width : '100%'; // Often width is 100% or fixed
-
-            // If padding is 0, it might be on the inner container, so let's default to at least our base if 0
-            if (parseFloat(style.paddingLeft) < 4) {
-                // Keep our default or try to go one level deep? 
-                // For reset safety:
-                btn.style.paddingLeft = '16px';
-            }
-
-            console.log("Gemini Project Manager: Copied styles from", referenceEl);
-        } else {
-            // Fallback if no reference: Increase default padding
-            btn.style.paddingLeft = '24px';
-            btn.style.marginLeft = '8px';
-        }
-
-        let inserted = false;
-
-        // Insertion Logic: We want to insert BEFORE the "Chats" section.
-        // We need to find the child of targetContainer that *contains* the existing chatsSpan.
-        const spanElements = Array.from(targetContainer.querySelectorAll('span'));
-        const chatsSpan = spanElements.find(el => el.textContent?.trim() === 'Chats' || el.textContent?.trim() === 'Recent');
-
-        if (chatsSpan) {
-            let current = chatsSpan;
-            while (current && current.parentElement !== targetContainer) {
-                current = current.parentElement!;
-            }
-
-            if (current && current.parentElement === targetContainer) {
-                targetContainer.insertBefore(btn, current);
-                inserted = true;
-                console.log("Gemini Project Manager: Inserted before Chats/Recent block");
-            }
-        }
-
-        // If "Chats" not found or insertion failed, try "Gems"
-        if (!inserted) {
-            const gemsSpan = spanElements.find(el => el.textContent?.trim() === 'Gems');
-            if (gemsSpan) {
-                let current = gemsSpan;
-                while (current && current.parentElement !== targetContainer) {
-                    current = current.parentElement!;
-                }
-
-                if (current && current.parentElement === targetContainer) {
-                    // Insert AFTER Gems
-                    if (current.nextSibling) {
-                        targetContainer.insertBefore(btn, current.nextSibling);
-                    } else {
-                        targetContainer.appendChild(btn);
-                    }
-                    inserted = true;
-                    console.log("Gemini Project Manager: Inserted after Gems block");
-                }
-            }
-        }
-
-        // Final Fallback: Insert at reasonably standard position (e.g. index 2 or 3)
-        if (!inserted) {
-            if (targetContainer.children.length > 2) {
-                targetContainer.insertBefore(btn, targetContainer.children[2]);
-            } else {
-                targetContainer.appendChild(btn);
-            }
-            console.log("Gemini Project Manager: Inserted at index 2 (fallback)");
-        }
-
-    } else {
-        retryCount++;
-
-        if (retryCount >= MAX_RETRIES) {
-            console.log("Gemini Project Manager: Max retries reached. Injecting fallback floating button.");
-            const fallbackBtn = createSidebarButton(true);
-            document.body.appendChild(fallbackBtn);
+        if ((text === 'New chat' || text === 'New Chat') && !newChatElement) {
+            newChatElement = el as HTMLElement;
+            newChatClickable = el.closest('button, a, [role="button"]') as HTMLElement;
+            console.log("Gemini Project Manager: Found New chat element:", el.tagName, newChatClickable);
         }
     }
+
+    // Use the clickable reference for styling
+    const styleReference = myStuffClickable || newChatClickable;
+
+    // Strategy 1: Insert before "My Stuff" (which puts it after New Chat)
+    if (myStuffElement) {
+        const btn = createProjectsButton(styleReference || undefined);
+
+        // Find the parent container for My Stuff
+        let myStuffContainer: HTMLElement | null = myStuffClickable || myStuffElement;
+        while (myStuffContainer && myStuffContainer.parentElement) {
+            const parent: HTMLElement = myStuffContainer.parentElement;
+            const visibleChildren = Array.from(parent.children).filter(
+                c => (c as HTMLElement).offsetHeight > 0
+            );
+            if (visibleChildren.length >= 2) {
+                parent.insertBefore(btn, myStuffContainer);
+                console.log("Gemini Project Manager: Injected Projects button before My Stuff");
+                return;
+            }
+            myStuffContainer = parent;
+        }
+    }
+
+    // Strategy 2: Insert after "New chat" if found
+    if (newChatElement) {
+        const btn = createProjectsButton(styleReference || undefined);
+
+        let newChatContainer: HTMLElement | null = newChatClickable || newChatElement;
+        while (newChatContainer && newChatContainer.parentElement) {
+            const parent: HTMLElement = newChatContainer.parentElement;
+            const visibleChildren = Array.from(parent.children).filter(
+                c => (c as HTMLElement).offsetHeight > 0
+            );
+            if (visibleChildren.length >= 2) {
+                if (newChatContainer.nextSibling) {
+                    parent.insertBefore(btn, newChatContainer.nextSibling);
+                } else {
+                    parent.appendChild(btn);
+                }
+                console.log("Gemini Project Manager: Injected Projects button after New Chat");
+                return;
+            }
+            newChatContainer = parent;
+        }
+    }
+
+    // Strategy 3: Find the sidebar/drawer container directly
+    const sidebarSelectors = [
+        'mat-drawer',
+        'mat-sidenav',
+        '[role="navigation"]',
+        'nav',
+        '.sidebar',
+        '[class*="drawer"]',
+        '[class*="sidenav"]'
+    ];
+
+    for (const sel of sidebarSelectors) {
+        const sidebar = document.querySelector(sel);
+        if (sidebar && (sidebar as HTMLElement).offsetHeight > 100) {
+            const btn = createProjectsButton();
+            // Try to append near the top
+            if (sidebar.firstChild) {
+                sidebar.insertBefore(btn, sidebar.firstChild);
+            } else {
+                sidebar.appendChild(btn);
+            }
+            console.log("Gemini Project Manager: Injected Projects button into sidebar via selector:", sel);
+            return;
+        }
+    }
+
+    console.log("Gemini Project Manager: Could not find suitable location for button injection. My Stuff found:", !!myStuffElement, "New Chat found:", !!newChatElement);
 }
+
+// Watch for theme changes and update button
+function setupThemeObserver() {
+    const updateButtonTheme = () => {
+        const btn = document.querySelector('.ez-projects-btn') as HTMLElement;
+        if (btn) {
+            const isLight = isLightMode();
+            btn.style.color = isLight ? '#1f2937' : '#e3e3e3';
+        }
+    };
+
+    // Check periodically for theme changes
+    setInterval(updateButtonTheme, 2000);
+
+    // Also observe class changes on body/html
+    const themeObserver = new MutationObserver(updateButtonTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+}
+// 20 attempts * 500ms debounce ~= 10 seconds before fallback
 
 // Helper to make existing chats draggable
 function makeChatsDraggable() {
@@ -369,10 +385,12 @@ function makeChatsDraggable() {
                 el.style.opacity = '0.6';
 
                 // Extract title - clean up multiline content
-                let title = el.textContent?.trim() || "Untitled Chat";
-                title = title.split('\n')[0].trim();
+                let rawTitle = el.textContent?.trim() || "Untitled Chat";
+                let title = rawTitle.split('\n')[0].trim();
                 // Remove trailing icons/action text
-                title = title.replace(/\s*(more_vert|delete|edit)$/i, '').trim();
+                if (title) {
+                    title = title.replace(/\s*(more_vert|delete|edit)$/i, '').trim();
+                }
 
                 // === ID EXTRACTION ===
                 let id: string | null = null;
@@ -512,48 +530,16 @@ function generateTitleHash(str: string): string {
     return Math.abs(hash).toString(36);
 }
 
-// Observe to handle SPA navigation updates (if the sidebar gets wiped)
+// Observe to handle SPA navigation updates (ensure draggability persists)
 const observer = new MutationObserver(() => {
-    // Debounce or check efficiently
-    if (!document.querySelector('.ez-projects-btn')) {
-        findAndInjectButton();
-    }
     // Continuously check for new chats to make draggable
     makeChatsDraggable();
 });
 
 function injectSidebar() {
-    if (document.getElementById(ROOT_ID)) return;
-
-    const rootHost = document.createElement('div');
-    rootHost.id = ROOT_ID;
-    document.body.appendChild(rootHost);
-
-    const shadowRoot = rootHost.attachShadow({ mode: 'open' });
-
-    // Inject Tailwind Styles
-    const styleTag = document.createElement('style');
-    styleTag.textContent = styleText;
-    shadowRoot.appendChild(styleTag);
-
-    const rootContainer = document.createElement('div');
-    rootContainer.style.height = '100%';
-    rootContainer.className = "font-sans text-base antialiased pointer-events-none"; // Allow clicks to pass through wrapper
-    shadowRoot.appendChild(rootContainer);
-
-    // Note: The Sidebar component inside needs to have pointer-events-auto
-
-    const root = createRoot(rootContainer);
-    root.render(
-        <React.StrictMode>
-            <Sidebar />
-        </React.StrictMode>
-    );
-
-    // Start observing for navigation changes (sidebar re-rendering)
+    // Side Panel Migration: No longer injecting sidebar into DOM.
+    // We only observe needed elements.
     observer.observe(document.body, { childList: true, subtree: true });
-    // Attempt preliminary injection
-    findAndInjectButton();
     makeChatsDraggable();
 }
 
@@ -586,8 +572,11 @@ function startChatPolling() {
 
 // Observe for DOM readiness (Gemini is an SPA)
 setTimeout(() => {
-    injectSidebar();
+    injectSidebar(); // Sets up observers
     startChatPolling();
+    setupSidePanelListeners();
+    findAndInjectButton(); // Inject the Projects button
+    setupThemeObserver(); // Watch for theme changes
 }, 1500);
 
 // --- Auto-Archivist Logic ---
@@ -613,7 +602,7 @@ function autoArchive() {
     scrapeDebounce = setTimeout(async () => {
         // Check if extension context is still valid before proceeding
         if (!isExtensionContextValid()) {
-            console.warn("Gemini Project Manager: Extension context invalidated, skipping auto-archive");
+            console.debug("Gemini Project Manager: Extension context invalidated, skipping auto-archive");
             return;
         }
 
@@ -855,6 +844,31 @@ async function performChatInteraction(payload: { requestId: string; text: string
     }
 }
 
+// --- Side Panel Listeners ---
+function setupSidePanelListeners() {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+        if (message.type === 'CMD_GET_CURRENT_CHAT_INFO') {
+            sendResponse({
+                title: getPageTitle(),
+                url: window.location.href,
+                chatId: getChatIdFromUrl()
+            });
+            return true;
+        }
+
+        if (message.type === 'CMD_OPEN_CHAT') {
+            const { chatId, url } = message;
+            const el = findChatElement(chatId, '');
+            if (el) {
+                el.click();
+            } else {
+                window.location.href = url;
+            }
+            sendResponse({ success: true });
+            return true;
+        }
+    });
+}
 function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }

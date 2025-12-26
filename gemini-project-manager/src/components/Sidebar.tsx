@@ -12,13 +12,21 @@ function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
 }
 
-const Sidebar = () => {
-    const [isOpen, setIsOpen] = useState(false);
+interface SidebarProps {
+    isSidePanel?: boolean;
+}
+
+const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
+    console.log("Gemini Project Manager: Sidebar Rendered. isSidePanel =", isSidePanel);
+    const [isOpen, setIsOpen] = useState(isSidePanel);
     const [showSettings, setShowSettings] = useState(false);
-    const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false); // Dropdown state
+    const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
     const [newWorkspaceName, setNewWorkspaceName] = useState('');
     const [activeTab, setActiveTab] = useState<'projects' | 'snippets'>('projects');
     const [showReferencePanel, setShowReferencePanel] = useState(false);
+
+    // Side Panel Context
+    const [currentTab, setCurrentTab] = useState<chrome.tabs.Tab | null>(null);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -37,12 +45,36 @@ const Sidebar = () => {
     const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId) || workspaces[0];
 
     useEffect(() => {
-        const handleToggle = () => setIsOpen(prev => !prev);
-        window.addEventListener('ez-files-toggle', handleToggle);
-        return () => window.removeEventListener('ez-files-toggle', handleToggle);
-    }, []);
+        if (isSidePanel) {
+            setIsOpen(true);
+            // Poll for the active tab so the sidebar knows which "Chat ID" we are looking at
+            const updateActiveTab = async () => {
+                const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                setCurrentTab(tab);
+            };
 
-    // Close dropdown when clicking outside (simple version)
+            updateActiveTab();
+
+            const handleTabActivated = () => updateActiveTab();
+            const handleTabUpdated = (_tabId: number, changeInfo: any) => {
+                if (changeInfo.url) updateActiveTab();
+            };
+
+            chrome.tabs.onActivated.addListener(handleTabActivated);
+            chrome.tabs.onUpdated.addListener(handleTabUpdated);
+
+            return () => {
+                chrome.tabs.onActivated.removeListener(handleTabActivated);
+                chrome.tabs.onUpdated.removeListener(handleTabUpdated);
+            };
+        } else {
+            const handleToggle = () => setIsOpen(prev => !prev);
+            window.addEventListener('ez-files-toggle', handleToggle);
+            return () => window.removeEventListener('ez-files-toggle', handleToggle);
+        }
+    }, [isSidePanel]);
+
+    // Close dropdown when clicking outside
     useEffect(() => {
         if (showWorkspaceMenu) {
             const onClick = () => setShowWorkspaceMenu(false);
@@ -72,22 +104,17 @@ const Sidebar = () => {
         reader.readAsText(file);
     };
 
-    if (!isOpen) return null; // Or keep it mounted but hidden? The CSS handles hidden transformation.
-    // Actually the CSS uses translate-x, so we should return the div always, but `isOpen` controls class.
-
-    // BUT: The original code returned the div always.
-    // "if (!isOpen) return null;" -> wait, the CSS has "translate-x-full". So it should render.
-    // My previous read (Step 115) didn't have "if (!isOpen) return null;".
-    // I should stick to the CSS transition.
+    if (!isSidePanel && !isOpen) return null; // Keep logic simple for overlay mode
 
     return (
         <div className={cn(
-            "fixed top-0 right-0 h-screen bg-[#1e1f20] text-gray-200 transition-transform duration-300 z-[9999] border-l border-gray-700 font-sans shadow-xl pointer-events-auto flex",
-            isOpen ? "translate-x-0" : "translate-x-full",
-            showReferencePanel ? "w-[calc(320px+20rem)] lg:w-[calc(320px+24rem)]" : "w-80"
+            "bg-[#1e1f20] text-gray-200 font-sans flex flex-col pointer-events-auto",
+            isSidePanel ? "w-full h-full" : "fixed top-0 right-0 h-screen transition-transform duration-300 z-[9999] border-l border-gray-700 shadow-xl",
+            (!isSidePanel && isOpen) ? "translate-x-0" : (!isSidePanel ? "translate-x-full" : ""),
+            (!isSidePanel && showReferencePanel) ? "w-[calc(320px+20rem)] lg:w-[calc(320px+24rem)]" : (isSidePanel ? "" : "w-80")
         )}>
             {/* Main Sidebar Column */}
-            <div className="flex flex-col h-full w-80 shrink-0 border-r border-gray-700">
+            <div className={cn("flex flex-col h-full shrink-0", isSidePanel ? "w-full" : "w-80 border-r border-gray-700")}>
                 {/* --- Header & Workspace Switcher --- */}
                 <div className="flex items-center justify-between p-3 border-b border-gray-700 h-14 bg-[#1e1f20] relative shrink-0">
 
@@ -165,9 +192,11 @@ const Sidebar = () => {
                         >
                             <Pin size={16} />
                         </button>
-                        <button onClick={() => setIsOpen(false)} className="p-1 hover:bg-gray-700 rounded-md transition-colors text-gray-400">
-                            <X size={20} />
-                        </button>
+                        {!isSidePanel && (
+                            <button onClick={() => setIsOpen(false)} className="p-1 hover:bg-gray-700 rounded-md transition-colors text-gray-400">
+                                <X size={20} />
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -198,7 +227,12 @@ const Sidebar = () => {
                     <>
                         <div className="flex-1 overflow-hidden flex flex-col">
                             {/* Only render ProjectList if we have an active workspace */}
-                            {activeTab === 'projects' && activeWorkspaceId && <ProjectList />}
+                            {activeTab === 'projects' && activeWorkspaceId && (
+                                <ProjectList
+                                    isSidePanel={isSidePanel}
+                                    currentUrl={currentTab?.url}
+                                />
+                            )}
                             {activeTab === 'snippets' && <SnippetList />}
                         </div>
                         <div className="p-3 border-t border-gray-700 shrink-0">

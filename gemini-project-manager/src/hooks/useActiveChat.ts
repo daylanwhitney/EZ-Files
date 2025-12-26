@@ -4,10 +4,50 @@ import { useState, useEffect } from 'react';
  * Custom hook that observes Gemini's sidebar to detect which chat is currently active.
  * Returns the title of the active chat by observing DOM changes.
  */
-export function useActiveChat() {
+export function useActiveChat(isSidePanel: boolean = false) {
     const [activeTitle, setActiveTitle] = useState<string | null>(null);
 
     useEffect(() => {
+        if (isSidePanel) {
+            // Side Panel Mode: Poll chrome.tabs
+            const updateTitle = async () => {
+                const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                if (tab && tab.title) {
+                    const cleanTitle = tab.title
+                        .replace(/ - Google Gemini$/, '')
+                        .replace(/ \| Gemini$/, '')
+                        .replace(/ - Gemini$/, '')
+                        .trim();
+
+                    if (cleanTitle !== 'Google Gemini' && cleanTitle !== 'Gemini') {
+                        setActiveTitle(cleanTitle);
+                    } else {
+                        setActiveTitle(null);
+                    }
+                }
+            };
+
+            updateTitle();
+            const interval = setInterval(updateTitle, 1000); // Poll every second
+
+            // Also listen for updates
+            const handleUpdated = (_tabId: number, changeInfo: any) => {
+                if (changeInfo.title || changeInfo.status === 'complete') updateTitle();
+            };
+            const handleActivated = () => updateTitle();
+
+            chrome.tabs.onUpdated.addListener(handleUpdated);
+            chrome.tabs.onActivated.addListener(handleActivated);
+
+            return () => {
+                clearInterval(interval);
+                chrome.tabs.onUpdated.removeListener(handleUpdated);
+                chrome.tabs.onActivated.removeListener(handleActivated);
+            };
+        }
+
+        // --- Content Script / Injection Mode (Original Logic) ---
+
         // Function to find the active chat in Gemini's sidebar
         const findActiveChat = (): string | null => {
             // STRATEGY 1: Use document.title first - most reliable
@@ -117,7 +157,7 @@ export function useActiveChat() {
             observer.disconnect();
             clearInterval(interval);
         };
-    }, []);
+    }, [isSidePanel]);
 
     return { activeTitle };
 }

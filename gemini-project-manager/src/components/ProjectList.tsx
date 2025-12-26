@@ -13,14 +13,19 @@ function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
 }
 
-export default function ProjectList() {
+interface ProjectListProps {
+    isSidePanel?: boolean;
+    currentUrl?: string;
+}
+
+export default function ProjectList({ isSidePanel = false, currentUrl }: ProjectListProps) {
     const { folders, chats, activeWorkspaceId, loading, addFolder, deleteFolder, addChatToFolder, refresh } = useProjects();
     const [newFolderName, setNewFolderName] = useState('');
     const [isCreating, setIsCreating] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
 
     // --- Active Chat Detection (Title-Based) ---
-    const { activeTitle } = useActiveChat();
+    const { activeTitle } = useActiveChat(isSidePanel);
 
     // Helper to normalize titles for comparison
     const normalize = (s: string) => s.toLowerCase().trim().replace(/[^\w\s]/g, '');
@@ -152,6 +157,8 @@ export default function ProjectList() {
                             await storage.removeChatFromFolder(chatId, folder.id);
                             refresh();
                         }}
+                        isSidePanel={isSidePanel}
+                        currentUrl={currentUrl}
                     />
                 ))}
 
@@ -165,7 +172,7 @@ export default function ProjectList() {
     );
 }
 
-function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onAddChat, onRefresh, onRemoveChat }: {
+function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onAddChat, onRefresh, onRemoveChat, isSidePanel, currentUrl }: {
     folder: Folder;
     allChats: Record<string, Chat>;
     activeChatId: string | null;
@@ -174,6 +181,8 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
     onAddChat: (folderId: string, chat: any) => void;
     onRefresh: () => void;
     onRemoveChat: (chatId: string) => void;
+    isSidePanel?: boolean;
+    currentUrl?: string; // Add this
 }) {
     // Auto-expand if search forces it, OR if the active chat is inside this folder
     const hasActiveChat = activeChatId ? folder.chatIds.includes(activeChatId) : false;
@@ -430,21 +439,53 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                         </button>
 
                         <button
-                            onClick={(e) => {
+                            onClick={async (e) => {
                                 e.stopPropagation();
-                                const url = window.location.href;
-                                const match = url.match(/\/app\/([a-zA-Z0-9]+)/);
 
-                                let title = getGeminiTitle();
+                                let url = isSidePanel && currentUrl ? currentUrl : window.location.href;
+                                let title = 'Untitled Chat';
+                                let chatIdFromUrl = null;
+
+                                if (isSidePanel) {
+                                    // Get info from content script
+                                    try {
+                                        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                                        if (tab?.id) {
+
+                                            // Ask content script for "real" title just in case (e.g. if tab title is generic)
+                                            // But tab.title is usually usually correct per useActiveChat logic
+                                            const response = await chrome.tabs.sendMessage(tab.id, { type: 'CMD_GET_CURRENT_CHAT_INFO' });
+                                            if (response) {
+                                                if (response.title) title = response.title;
+                                                if (response.url) url = response.url;
+                                            } else {
+                                                // Fallback to tab info
+                                                if (tab.title) title = tab.title.replace(/ - Google Gemini$/, '');
+                                                if (tab.url) url = tab.url;
+                                            }
+                                        }
+                                    } catch (err) {
+                                        console.warn("Could not query content script, using tab info fallback");
+                                        // Fallback is already defaults
+                                    }
+                                } else {
+                                    // Overlay mode: Direct access
+                                    url = window.location.href;
+                                    title = getGeminiTitle();
+                                }
+
+                                const match = url.match(/\/app\/([a-zA-Z0-9]+)/);
+                                if (match) chatIdFromUrl = match[1];
+
                                 if (title === 'Google Gemini' || title === 'Untitled Chat') {
                                     const manualTitle = prompt("Enter chat name:", "My Chat");
                                     if (manualTitle) title = manualTitle;
                                 }
 
-                                if (match) {
-                                    onAddChat(folder.id, { id: match[1], title, url, timestamp: Date.now() });
+                                if (chatIdFromUrl) {
+                                    onAddChat(folder.id, { id: chatIdFromUrl, title, url, timestamp: Date.now() });
                                 } else {
-                                    alert("No active chat found.");
+                                    alert("No active chat found (URL must contain /app/ID).");
                                 }
                             }}
                             className="p-1 hover:bg-gray-700 hover:text-green-400 rounded transition-all"
@@ -495,6 +536,7 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                                     chatData={allChats[chatId]}
                                     isActive={chatId === activeChatId}
                                     onRemove={() => onRemoveChat(chatId)}
+                                    isSidePanel={isSidePanel}
                                 />
                             ))
                         )}
@@ -505,11 +547,12 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
     );
 }
 
-function ChatItem({ chatId, chatData, isActive, onRemove }: {
+function ChatItem({ chatId, chatData, isActive, onRemove, isSidePanel }: {
     chatId: string;
     chatData?: Chat;
     isActive: boolean;
-    onRemove: () => void
+    onRemove: () => void;
+    isSidePanel?: boolean;
 }) {
     const [localChat, setLocalChat] = useState<Chat | null>(chatData || null);
 
@@ -526,17 +569,39 @@ function ChatItem({ chatId, chatData, isActive, onRemove }: {
         }
     }, [chatId, chatData]);
 
-    const handleNavigation = (e: React.MouseEvent) => {
+    const handleNavigation = async (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
 
         if (!localChat || !localChat.url) return;
 
-        const sidebarEl = findChatElement(chatId, localChat.title);
-        if (sidebarEl) {
-            sidebarEl.click();
+        if (isSidePanel) {
+            // Side Panel: Navigate the main window
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tab && tab.id) {
+                // Check if we are already on this URL (to avoid reload)
+                if (tab.url === localChat.url) return;
+
+                // First try to tell content script to click the link internally (SPA nav)
+                try {
+                    await chrome.tabs.sendMessage(tab.id, {
+                        type: 'CMD_OPEN_CHAT',
+                        chatId,
+                        url: localChat.url
+                    });
+                } catch (err) {
+                    // If content script fails (e.g. not loaded), hard navigate
+                    chrome.tabs.update(tab.id, { url: localChat.url });
+                }
+            }
         } else {
-            window.location.href = localChat.url;
+            // Overlay Mode: Direct interaction
+            const sidebarEl = findChatElement(chatId, localChat.title);
+            if (sidebarEl) {
+                sidebarEl.click();
+            } else {
+                window.location.href = localChat.url;
+            }
         }
     };
 

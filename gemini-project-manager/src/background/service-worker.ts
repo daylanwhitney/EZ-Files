@@ -6,8 +6,37 @@ import { FolderChatService } from './chat-service';
 const queue = new IndexingQueue();
 const chatService = new FolderChatService();
 
+// Track side panel open state per window
+const panelOpenState: Map<number, boolean> = new Map();
+
+// Helper to check if panel is open for a window
+function isPanelOpen(windowId: number): boolean {
+    return panelOpenState.get(windowId) || false;
+}
+
+// Listen for panel open/close events to track state
+if (chrome.sidePanel) {
+    // @ts-ignore - onOpened may not be in older type definitions
+    chrome.sidePanel.onOpened?.addListener((info: { windowId: number }) => {
+        panelOpenState.set(info.windowId, true);
+        console.log("Service Worker: Panel opened for window", info.windowId);
+    });
+
+    // @ts-ignore - onClosed may not be in older type definitions  
+    chrome.sidePanel.onClosed?.addListener((info: { windowId: number }) => {
+        panelOpenState.set(info.windowId, false);
+        console.log("Service Worker: Panel closed for window", info.windowId);
+    });
+}
+
+// Enable Side Panel to open on icon click
+if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+        .catch((error) => console.error(error));
+}
+
 chrome.runtime.onInstalled.addListener(() => {
-    console.log("Gemini Project Manager installed");
+    console.log("Gemini Project Manager: Installed");
 });
 
 // Unified message handler for all runtime messages
@@ -22,26 +51,59 @@ chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
         chatService.handleExternalResponse(message);
         return false; // No async response needed
     }
-    
+
     // Route indexing commands to the queue
     if (message.type === 'CMD_INDEX_CHAT' && message.chatId) {
         queue.addToQueue(message.chatId, message.title);
         return false;
     }
-    
+
     // ARCHIVE_COMPLETE is handled by IndexingQueue's own listener
     // Just log it here for debugging
     if (message.type === 'ARCHIVE_COMPLETE') {
         console.log("Service Worker: ARCHIVE_COMPLETE received for", message.chatId);
         return false;
     }
-    
+
     // Route discovery complete (just log for now, migration happens in content script)
     if (message.type === 'DISCOVERY_COMPLETE') {
         console.log("Service Worker: Discovery complete", message);
         return false;
     }
-    
+
+    // Handle CMD_TOGGLE_SIDE_PANEL from content script (toggle open/close)
+    // IMPORTANT: Must use sender.tab directly to maintain user gesture context
+    if (message.type === 'CMD_OPEN_SIDE_PANEL' || message.type === 'CMD_TOGGLE_SIDE_PANEL') {
+        const tabId = _sender.tab?.id;
+        const windowId = _sender.tab?.windowId;
+
+        if (!tabId || !windowId) {
+            console.error("Service Worker: No tab info available for side panel toggle");
+            return false;
+        }
+
+        // Check if panel is currently open
+        const isOpen = isPanelOpen(windowId);
+
+        if (isOpen) {
+            // Close the panel
+            // @ts-ignore - close method may not be in older type definitions
+            chrome.sidePanel.close({ windowId }).then(() => {
+                console.log("Service Worker: Closed side panel");
+            }).catch((err: Error) => {
+                console.error("Service Worker: Failed to close side panel", err);
+            });
+        } else {
+            // Open the panel - must be synchronous to preserve user gesture
+            chrome.sidePanel.open({ tabId }).then(() => {
+                console.log("Service Worker: Opened side panel");
+            }).catch((err: Error) => {
+                console.error("Service Worker: Failed to open side panel", err);
+            });
+        }
+        return false;
+    }
+
     return false; // Default: no async response
 });
 
