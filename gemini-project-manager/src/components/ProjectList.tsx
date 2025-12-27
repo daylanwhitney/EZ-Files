@@ -289,11 +289,17 @@ function FolderItem({
                 });
             }
 
+            // Get workspace persona
+            const storageData = await storage.get();
+            const workspace = storageData.workspaces.find(w => w.id === folder.workspaceId);
+            const workspacePrompt = workspace?.defaultPrompt;
+
             const response = await chrome.runtime.sendMessage({
                 type: 'CMD_FOLDER_CHAT_SEND',
                 folderId: folder.id,
                 text,
-                context: context ? context : undefined
+                context: context ? context : undefined,
+                workspacePrompt: workspacePrompt || undefined
             });
 
             if (response && response.success) {

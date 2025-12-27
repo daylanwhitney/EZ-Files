@@ -806,8 +806,8 @@ function setupBackgroundChatListeners() {
     }
 }
 
-async function performChatInteraction(payload: { requestId: string; text: string; context?: string }) {
-    const { requestId, text, context } = payload;
+async function performChatInteraction(payload: { requestId: string; text: string; context?: string; autoDelete?: boolean }) {
+    const { requestId, text, context, autoDelete } = payload;
 
     try {
         // Wait for the page to be fully ready (editor available)
@@ -832,6 +832,12 @@ async function performChatInteraction(payload: { requestId: string; text: string
         console.log("Gemini Project Manager [BG]: Waiting for AI response...");
         const answer = await waitForResponseCompletion();
 
+        // If autoDelete is requested (e.g. for meta-prompts), delete this chat
+        if (autoDelete) {
+            console.log("Gemini Project Manager [BG]: Auto-deleting temporary chat...");
+            await deleteCurrentChat();
+        }
+
         // Send response back to background service
         console.log("Gemini Project Manager [BG]: Response captured, sending back");
         safeSendMessage({
@@ -840,7 +846,7 @@ async function performChatInteraction(payload: { requestId: string; text: string
             text: answer,
             chatId: getChatIdFromUrl()
         }).catch(err => {
-            console.error("Gemini Project Manager [BG]: Failed to send response:", err);
+            console.error("Gemini Project Manager [BG]: Failed to send response:", err?.message || String(err));
         });
 
     } catch (err) {
@@ -853,6 +859,88 @@ async function performChatInteraction(payload: { requestId: string; text: string
             error: err instanceof Error ? err.message : String(err),
             chatId: getChatIdFromUrl()
         }).catch(() => { });
+    }
+}
+
+// Helper: Delete the current chat (for temporary/meta-prompt chats)
+async function deleteCurrentChat(): Promise<void> {
+    try {
+        // Find the delete button in the chat options menu
+        // First, find and click the "more options" (three dots) button
+        const moreOptionsSelectors = [
+            'button[aria-label*="more"]',
+            'button[aria-label*="More"]',
+            'button[aria-label*="options"]',
+            'button[data-testid*="menu"]',
+            'button mat-icon-button',
+            '[aria-haspopup="menu"]'
+        ];
+
+        let moreBtn: HTMLElement | null = null;
+        for (const sel of moreOptionsSelectors) {
+            const btn = document.querySelector(sel) as HTMLElement;
+            if (btn && btn.offsetParent !== null) {
+                moreBtn = btn;
+                break;
+            }
+        }
+
+        if (!moreBtn) {
+            console.debug("Gemini Project Manager [BG]: Could not find more options button for delete (non-critical)");
+            return;
+        }
+
+        moreBtn.click();
+        await delay(300);
+
+        // Now find and click the delete option
+        const deleteSelectors = [
+            'button[aria-label*="Delete"]',
+            'button[aria-label*="delete"]',
+            '[role="menuitem"]:has-text("Delete")',
+            'mat-menu-item:has-text("Delete")',
+            'button:has(mat-icon[fonticon="delete"])'
+        ];
+
+        // Fallback: search for menu items with "Delete" text
+        const menuItems = document.querySelectorAll('[role="menuitem"], mat-menu-item, .mat-mdc-menu-item');
+        let deleteBtn: HTMLElement | null = null;
+
+        for (const item of menuItems) {
+            if (item.textContent?.toLowerCase().includes('delete')) {
+                deleteBtn = item as HTMLElement;
+                break;
+            }
+        }
+
+        if (!deleteBtn) {
+            for (const sel of deleteSelectors) {
+                try {
+                    const btn = document.querySelector(sel) as HTMLElement;
+                    if (btn && btn.offsetParent !== null) {
+                        deleteBtn = btn;
+                        break;
+                    }
+                } catch { /* skip invalid selectors */ }
+            }
+        }
+
+        if (deleteBtn) {
+            deleteBtn.click();
+            await delay(300);
+
+            // Confirm the deletion if there's a confirmation dialog
+            const confirmBtn = document.querySelector('button[aria-label*="Confirm"], button[data-testid*="confirm"], .mdc-dialog__button--accept') as HTMLElement;
+            if (confirmBtn) {
+                confirmBtn.click();
+            }
+
+            console.debug("Gemini Project Manager [BG]: Chat deleted successfully");
+        } else {
+            console.debug("Gemini Project Manager [BG]: Could not find delete button (non-critical)");
+        }
+    } catch (err) {
+        console.debug("Gemini Project Manager [BG]: Failed to delete chat (non-critical):", err);
     }
 }
 

@@ -452,5 +452,15 @@ export const storage = {
             w.id === workspaceId ? { ...w, defaultPrompt: prompt } : w
         );
         await storage.save({ workspaces });
+    },
+
+    // --- API KEY STORAGE ---
+    getApiKey: async (): Promise<string | null> => {
+        const result = await chrome.storage.local.get('geminiApiKey') as { geminiApiKey?: string };
+        return result.geminiApiKey || null;
+    },
+
+    setApiKey: async (apiKey: string) => {
+        await chrome.storage.local.set({ geminiApiKey: apiKey });
     }
 };

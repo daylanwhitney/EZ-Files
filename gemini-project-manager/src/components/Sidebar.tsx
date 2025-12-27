@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, X, Download, Upload, Trash, ChevronDown, Check, Plus, Layout, Pin } from 'lucide-react';
+import { Settings, X, Download, Upload, Trash, ChevronDown, Check, Plus, Layout, Pin, Wand2, Edit3, Save } from 'lucide-react';
+import { PROMPT_ENGINEER_SYSTEM } from '../utils/prompts';
+import { callGeminiAPI } from '../utils/gemini-api';
+import type { Workspace } from '../types';
 import ProjectList from './ProjectList';
 import { SnippetList } from './SnippetList';
 
@@ -23,6 +26,14 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
     const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
     const [newWorkspaceName, setNewWorkspaceName] = useState('');
     const [activeTab, setActiveTab] = useState<'projects' | 'snippets'>('projects');
+
+    // NEW STATE for Workspace Settings Modal
+    const [editingWorkspace, setEditingWorkspace] = useState<Workspace | null>(null);
+    const [editName, setEditName] = useState('');
+    const [editPrompt, setEditPrompt] = useState('');
+    const [isEnhancing, setIsEnhancing] = useState(false);
+    const [enhancingError, setEnhancingError] = useState<string | null>(null);
+    const [apiKey, setApiKey] = useState('');
 
 
     // Side Panel Context
@@ -82,6 +93,13 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
         }
     }, [showWorkspaceMenu]);
 
+    // Load API key on mount
+    useEffect(() => {
+        storage.getApiKey().then(key => {
+            if (key) setApiKey(key);
+        });
+    }, []);
+
     const handleCreateWorkspace = async (e: React.FormEvent) => {
         e.preventDefault();
         if (newWorkspaceName.trim()) {
@@ -101,6 +119,76 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
             setShowSettings(false);
         };
         reader.readAsText(file);
+    };
+
+
+    // ACTION: Open the modal
+    const handleEditWorkspace = (ws: Workspace, e: React.MouseEvent) => {
+        e.stopPropagation();
+        setEditingWorkspace(ws);
+        setEditName(ws.name);
+        setEditPrompt(ws.defaultPrompt || '');
+        setShowWorkspaceMenu(false); // Close the dropdown
+    };
+
+    // ACTION: Save changes
+    const handleSaveWorkspace = async () => {
+        if (!editingWorkspace) return;
+
+        // Update storage
+        const data = await storage.get();
+        const updatedWorkspaces = data.workspaces.map(w =>
+            w.id === editingWorkspace.id
+                ? { ...w, name: editName, defaultPrompt: editPrompt }
+                : w
+        );
+        await storage.save({ workspaces: updatedWorkspaces });
+
+        refresh(); // Refresh UI
+        setEditingWorkspace(null);
+    };
+
+    // ACTION: The "Magic" Button Logic (Modal)
+    const handleEnhancePrompt = async () => {
+        if (!editPrompt.trim()) return;
+        if (!apiKey) {
+            setEnhancingError('API key required. Add it in Settings.');
+            return;
+        }
+        setIsEnhancing(true);
+        setEnhancingError(null);
+
+        try {
+            const result = await callGeminiAPI(apiKey, editPrompt, PROMPT_ENGINEER_SYSTEM);
+            setEditPrompt(result);
+        } catch (error: any) {
+            console.error("Enhancement failed", error);
+            setEnhancingError(error.message || 'API call failed.');
+        } finally {
+            setIsEnhancing(false);
+        }
+    };
+
+    // ACTION: Enhance Active Workspace (Global Settings)
+    const handleEnhanceActiveWorkspace = async () => {
+        if (!activeWorkspace?.defaultPrompt?.trim()) return;
+        if (!apiKey) {
+            setEnhancingError('API key required. Add it below.');
+            return;
+        }
+        setIsEnhancing(true);
+        setEnhancingError(null);
+
+        try {
+            const result = await callGeminiAPI(apiKey, activeWorkspace.defaultPrompt, PROMPT_ENGINEER_SYSTEM);
+            await storage.updateWorkspaceDefaultPrompt(activeWorkspace.id, result);
+            refresh();
+        } catch (error: any) {
+            console.error("Enhancement failed", error);
+            setEnhancingError(error.message || 'API call failed.');
+        } finally {
+            setIsEnhancing(false);
+        }
     };
 
     if (!isSidePanel && !isOpen) return null; // Keep logic simple for overlay mode
@@ -152,15 +240,24 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
                                             </span>
                                         </div>
                                         {workspaces.length > 1 && (
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    if (confirm(`Delete workspace "${w.name}"?`)) deleteWorkspace(w.id);
-                                                }}
-                                                className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400"
-                                            >
-                                                <Trash size={12} />
-                                            </button>
+                                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button
+                                                    onClick={(e) => handleEditWorkspace(w, e)}
+                                                    className="p-1 hover:text-blue-400"
+                                                    title="Workspace Settings"
+                                                >
+                                                    <Edit3 size={12} />
+                                                </button>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (confirm(`Delete workspace "${w.name}"?`)) deleteWorkspace(w.id);
+                                                    }}
+                                                    className="p-1 hover:text-red-400"
+                                                >
+                                                    <Trash size={12} />
+                                                </button>
+                                            </div>
                                         )}
                                     </div>
                                 ))}
@@ -286,19 +383,55 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
                                 />
                             </div>
                             <div>
-                                <label className="text-xs text-gray-400 mb-1 block">Default Prompt</label>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="text-xs text-gray-400">Default Prompt</label>
+                                    {enhancingError && !editingWorkspace && <span className="text-xs text-red-400">{enhancingError}</span>}
+                                </div>
                                 <p className="text-[10px] text-gray-500 mb-1">Auto-injected when starting a new chat in this workspace.</p>
-                                <textarea
-                                    className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500 min-h-[80px]"
-                                    placeholder="e.g. You are a senior React developer. Always prefer functional components..."
-                                    value={activeWorkspace.defaultPrompt || ''}
-                                    onChange={(e) => {
-                                        storage.updateWorkspaceDefaultPrompt(activeWorkspace.id, e.target.value);
-                                        // Trigger a shallow refresh to update the UI local state
-                                        refresh();
-                                    }}
-                                />
+                                <div className="relative">
+                                    <textarea
+                                        className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500 min-h-[80px] pb-8 font-mono"
+                                        placeholder="e.g. You are a senior React developer. Always prefer functional components..."
+                                        value={activeWorkspace.defaultPrompt || ''}
+                                        onChange={(e) => {
+                                            storage.updateWorkspaceDefaultPrompt(activeWorkspace.id, e.target.value);
+                                            refresh();
+                                        }}
+                                    />
+                                    <div className="absolute bottom-2 right-2">
+                                        <button
+                                            onClick={handleEnhanceActiveWorkspace}
+                                            disabled={isEnhancing || !activeWorkspace.defaultPrompt}
+                                            className={`text-xs flex items-center gap-1 px-2 py-1 rounded-full shadow-lg backdrop-blur-sm transition-all border ${isEnhancing
+                                                ? 'bg-blue-900/50 border-blue-500/50 text-blue-200 cursor-wait'
+                                                : 'bg-indigo-600/90 hover:bg-indigo-500 hover:scale-105 border-indigo-400/30 text-white'
+                                                }`}
+                                            title="Auto-Enhance with AI"
+                                        >
+                                            <Wand2 size={12} className={isEnhancing ? "animate-spin" : ""} />
+                                            {isEnhancing ? 'Magic...' : 'Auto-Enhance'}
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
+                        </div>
+
+                        <div className="h-px bg-gray-700 my-2"></div>
+
+                        <h2 className="font-semibold text-white">Gemini API</h2>
+                        <div className="bg-gray-800 p-3 rounded border border-gray-700 flex flex-col gap-2">
+                            <label className="text-xs text-gray-400">API Key</label>
+                            <p className="text-[10px] text-gray-500">Required for Auto-Enhance. Get yours at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-blue-400 underline">aistudio.google.com</a></p>
+                            <input
+                                type="password"
+                                className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
+                                placeholder="AIza..."
+                                value={apiKey}
+                                onChange={(e) => {
+                                    setApiKey(e.target.value);
+                                    storage.setApiKey(e.target.value);
+                                }}
+                            />
                         </div>
 
                         <div className="h-px bg-gray-700 my-2"></div>
@@ -325,6 +458,70 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
             </div >
 
 
+
+            {/* NEW: Workspace Settings Modal Overlay */}
+            {
+                editingWorkspace && (
+                    <div className="absolute inset-0 bg-[#1e1f20] z-[10000] p-4 flex flex-col gap-4 animate-in fade-in duration-200">
+                        <div className="flex items-center justify-between border-b border-gray-700 pb-2">
+                            <h2 className="font-semibold text-lg text-white">Workspace Settings</h2>
+                            <button onClick={() => setEditingWorkspace(null)} className="hover:text-white text-gray-400"><X size={20} /></button>
+                        </div>
+
+                        {/* Name Input */}
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium text-gray-400">Name</label>
+                            <input
+                                value={editName}
+                                onChange={(e) => setEditName(e.target.value)}
+                                className="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                            />
+                        </div>
+
+                        {/* Prompt Input */}
+                        <div className="space-y-1 flex-1 flex flex-col min-h-0">
+                            <div className="flex items-center justify-between">
+                                <label className="text-xs font-medium text-gray-400">Virtual Persona (System Instructions)</label>
+                                {enhancingError && <span className="text-xs text-red-400">{enhancingError}</span>}
+                            </div>
+                            <div className="relative flex-1">
+                                <textarea
+                                    value={editPrompt}
+                                    onChange={(e) => setEditPrompt(e.target.value)}
+                                    placeholder="e.g. 'Act as a forensic accountant specializing in corporate tax...'"
+                                    className="w-full h-full bg-gray-800 border border-gray-700 rounded p-3 text-sm text-gray-200 focus:border-blue-500 focus:outline-none resize-none font-mono leading-relaxed pb-10"
+                                />
+                                <div className="absolute bottom-2 right-2">
+                                    <button
+                                        onClick={handleEnhancePrompt}
+                                        disabled={isEnhancing || !editPrompt}
+                                        className={`text-xs flex items-center gap-1 px-3 py-1.5 rounded-full shadow-lg backdrop-blur-sm transition-all border ${isEnhancing
+                                            ? 'bg-blue-900/50 border-blue-500/50 text-blue-200 cursor-wait'
+                                            : 'bg-indigo-600/90 hover:bg-indigo-500 hover:scale-105 border-indigo-400/30 text-white'
+                                            }`}
+                                        title="Auto-Enhance with AI"
+                                    >
+                                        <Wand2 size={14} className={isEnhancing ? "animate-spin" : ""} />
+                                        {isEnhancing ? 'Magic...' : 'Auto-Enhance'}
+                                    </button>
+                                </div>
+                            </div>
+                            <p className="text-[10px] text-gray-500">
+                                This instruction will be automatically injected at the start of every new chat in this workspace.
+                            </p>
+                        </div>
+
+                        {/* Save Button */}
+                        <button
+                            onClick={handleSaveWorkspace}
+                            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 rounded flex items-center justify-center gap-2 transition-colors"
+                        >
+                            <Save size={16} />
+                            Save Changes
+                        </button>
+                    </div>
+                )
+            }
         </div >
     );
 };
