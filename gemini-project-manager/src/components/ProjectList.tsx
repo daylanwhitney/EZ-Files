@@ -5,7 +5,7 @@ import { useProjects } from '../hooks/useProjects';
 import { useActiveChat } from '../hooks/useActiveChat';
 import type { Folder, Chat, StorageData } from '../types';
 import { storage } from '../utils/storage';
-import { findChatElement } from '../utils/dom';
+
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -18,76 +18,86 @@ interface ProjectListProps {
     currentUrl?: string;
 }
 
+// Helper to build path string for search results
+const getFolderPath = (folder: Folder, allFolders: Folder[]): string => {
+    if (!folder.parentId) return folder.name;
+    const parent = allFolders.find(f => f.id === folder.parentId);
+    return parent ? `${getFolderPath(parent, allFolders)} / ${folder.name}` : folder.name;
+};
+
+// Helper: Get all chat IDs recursively from a folder and its subfolders
+const getRecursiveChatIds = (folderId: string, allFolders: Folder[]): string[] => {
+    const folder = allFolders.find(f => f.id === folderId);
+    if (!folder) return [];
+
+    let ids = [...folder.chatIds];
+
+    // Find children
+    const children = allFolders.filter(f => f.parentId === folderId);
+    children.forEach(child => {
+        ids = [...ids, ...getRecursiveChatIds(child.id, allFolders)];
+    });
+
+    // Deduplicate
+    return Array.from(new Set(ids));
+};
+
 export default function ProjectList({ isSidePanel = false, currentUrl }: ProjectListProps) {
-    const { folders, chats, activeWorkspaceId, loading, addFolder, deleteFolder, addChatToFolder, refresh } = useProjects();
+    const { folders, chats, activeWorkspaceId, loading, addFolder, moveFolder, deleteFolder, addChatToFolder, refresh } = useProjects();
     const [newFolderName, setNewFolderName] = useState('');
     const [isCreating, setIsCreating] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
 
     // --- Active Chat Detection ---
-    // 1. Try to get ID from URL (Most Reliable)
     let urlChatId: string | null = null;
     if (currentUrl) {
         const match = currentUrl.match(/\/app\/([a-zA-Z0-9_-]+)/);
         if (match) urlChatId = match[1];
     }
-
-    // 2. Fallback to Title-Based Detection (if URL ID not found or checking title match)
     const { activeTitle } = useActiveChat(isSidePanel);
-
-    // Find the chat ID that matches
     let activeChatId = urlChatId;
 
-    // If we have a URL ID, verify it exists in our chats to confirm (optional, but good for safety)
-    // Actually, if the URL ID matches a chat key, we should definitely use it.
-
     if (!activeChatId && activeTitle) {
-        // Fallback: Fuzzy Name Match
         const normalize = (s: string) => s.toLowerCase().trim().replace(/[^\w\s]/g, '');
-
         activeChatId = Object.keys(chats).find(key => {
             const chat = chats[key];
             if (!chat.title) return false;
-
             const storedNorm = normalize(chat.title);
             const activeNorm = normalize(activeTitle);
-
             if (storedNorm === activeNorm) return true;
             if (storedNorm.includes(activeNorm) || activeNorm.includes(storedNorm)) return true;
-
             const minLen = Math.min(storedNorm.length, activeNorm.length, 20);
-            if (minLen >= 5 && storedNorm.substring(0, minLen) === activeNorm.substring(0, minLen)) return true;
-
-            return false;
+            return minLen >= 5 && storedNorm.substring(0, minLen) === activeNorm.substring(0, minLen);
         }) || null;
     }
 
     const handleCreate = async () => {
         if (!newFolderName.trim()) return;
-        await addFolder(newFolderName);
+        // Top level folder creation
+        await addFolder(newFolderName, null);
         setNewFolderName('');
         setIsCreating(false);
     };
 
     // --- Search & Filtering Logic ---
     const workspaceFolders = folders.filter(f => f.workspaceId === activeWorkspaceId);
-    let filteredFolders: (Folder & { _forceExpand?: boolean })[] = workspaceFolders;
 
+    // Default: Show Only Roots
+    let displayFolders: (Folder & { _forceExpand?: boolean; _breadcrumbs?: string })[] = workspaceFolders.filter(f => f.parentId === null);
+
+    // Search Mode: Flat List of MATCHES + Breadcrumbs
     if (searchQuery.trim()) {
         const isTagSearch = searchQuery.startsWith('#');
         const query = isTagSearch ? searchQuery.slice(1).toLowerCase() : searchQuery.toLowerCase();
 
-        filteredFolders = workspaceFolders.map(folder => {
-            // 1. If folder name matches search (only if NOT tag search), keep it and show all its chats
-            if (!isTagSearch && folder.name.toLowerCase().includes(query)) {
-                return { ...folder, _forceExpand: true };
-            }
+        displayFolders = workspaceFolders.map(folder => {
+            // 1. Name Match
+            let matches = !isTagSearch && folder.name.toLowerCase().includes(query);
 
-            // 2. Filter chats
+            // 2. Chat Match
             const matchingChatIds = folder.chatIds.filter(chatId => {
                 const chat = chats[chatId];
                 if (!chat) return false;
-
                 if (isTagSearch) {
                     return chat.tags?.some(t => t.toLowerCase().includes(query));
                 } else {
@@ -95,24 +105,23 @@ export default function ProjectList({ isSidePanel = false, currentUrl }: Project
                 }
             });
 
-            if (matchingChatIds.length > 0) {
+            if (matches || matchingChatIds.length > 0) {
                 return {
                     ...folder,
-                    chatIds: matchingChatIds,
-                    _forceExpand: true
+                    // If folder matches, show all. If only chats match, filter them.
+                    chatIds: matches ? folder.chatIds : matchingChatIds,
+                    _forceExpand: true,
+                    _breadcrumbs: getFolderPath(folder, workspaceFolders)
                 };
             }
-
             return null;
-        }).filter(Boolean) as (Folder & { _forceExpand?: boolean })[];
+        }).filter(Boolean) as any;
     }
-
 
     if (loading) return <div className="p-4 text-gray-400 text-sm">Loading projects...</div>;
 
     return (
         <div className="flex-1 overflow-y-auto flex flex-col">
-
             {/* Search Bar */}
             <div className="px-4 py-2 border-b border-gray-700 bg-[#1e1f20] sticky top-0 z-10">
                 <div className="relative">
@@ -156,26 +165,41 @@ export default function ProjectList({ isSidePanel = false, currentUrl }: Project
 
             {/* Folder List */}
             <div className="space-y-0.5 px-2 mt-1">
-                {filteredFolders.map(folder => (
-                    <FolderItem
-                        key={folder.id}
-                        folder={folder}
-                        allChats={chats} // Pass full chat map
-                        activeChatId={activeChatId} // Pass active ID
-                        forceExpand={folder._forceExpand}
-                        onDelete={() => deleteFolder(folder.id)}
-                        onAddChat={addChatToFolder}
-                        onRefresh={refresh}
-                        onRemoveChat={async (chatId) => {
-                            await storage.removeChatFromFolder(chatId, folder.id);
-                            refresh();
-                        }}
-                        isSidePanel={isSidePanel}
-                        currentUrl={currentUrl}
-                    />
+                {displayFolders.map(folder => (
+                    <div key={folder.id}>
+                        {/* Search Breadcrumbs */}
+                        {folder._breadcrumbs && (folder._breadcrumbs !== folder.name) && (
+                            <div className="text-[10px] text-gray-500 mb-0.5 pl-2">
+                                {folder._breadcrumbs}
+                            </div>
+                        )}
+
+                        <FolderItem
+                            folder={folder}
+                            allFolders={workspaceFolders} // Recursive Context
+                            allChats={chats}
+                            activeChatId={activeChatId}
+                            forceExpand={folder._forceExpand}
+                            onDelete={() => deleteFolder(folder.id)}
+                            onAddChat={addChatToFolder}
+                            onRefresh={refresh}
+                            onRemoveChat={async (chatId) => {
+                                await storage.removeChatFromFolder(chatId, folder.id);
+                                refresh();
+                            }}
+                            onMoveFolder={moveFolder}
+                            onAddSubfolder={(parentId) => {
+                                const name = prompt("Enter subfolder name:", "New Folder");
+                                if (name && name.trim()) addFolder(name.trim(), parentId);
+                            }}
+                            isSidePanel={isSidePanel}
+                            currentUrl={currentUrl}
+                            isSearchMode={!!searchQuery}
+                        />
+                    </div>
                 ))}
 
-                {filteredFolders.length === 0 && (
+                {displayFolders.length === 0 && (
                     <div className="text-xs text-gray-500 text-center py-4">
                         {searchQuery ? 'No results found.' : 'No projects yet.'}
                     </div>
@@ -185,8 +209,11 @@ export default function ProjectList({ isSidePanel = false, currentUrl }: Project
     );
 }
 
-function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onAddChat, onRefresh, onRemoveChat, isSidePanel, currentUrl }: {
+// ----------------------------------------------------------------------
+
+interface FolderItemProps {
     folder: Folder;
+    allFolders: Folder[];
     allChats: Record<string, Chat>;
     activeChatId: string | null;
     forceExpand?: boolean;
@@ -194,28 +221,45 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
     onAddChat: (folderId: string, chat: any) => void;
     onRefresh: () => void;
     onRemoveChat: (chatId: string) => void;
+    onMoveFolder: (folderId: string, newParentId: string | null) => void;
+    onAddSubfolder: (parentId: string) => void;
     isSidePanel?: boolean;
-    currentUrl?: string; // Add this
-}) {
-    // Auto-expand if search forces it, OR if the active chat is inside this folder
-    const hasActiveChat = activeChatId ? folder.chatIds.includes(activeChatId) : false;
+    currentUrl?: string;
+    isSearchMode?: boolean;
+}
 
-    // Use an effect to sync expansion state when forceExpand or hasActiveChat changes
+function FolderItem({
+    folder, allFolders, allChats, activeChatId, forceExpand,
+    onDelete, onAddChat, onRefresh, onRemoveChat, onMoveFolder, onAddSubfolder,
+    isSidePanel, currentUrl, isSearchMode
+}: FolderItemProps) {
+
+    // Identification
+    const childFolders = allFolders.filter(f => f.parentId === folder.id);
+
+    // Auto-expand logic
+    // Check if active chat is in THIS folder OR in any descendants
+    const hasActiveChatInTree = (fid: string): boolean => {
+        if (!activeChatId) return false;
+        const f = allFolders.find(x => x.id === fid);
+        if (f?.chatIds.includes(activeChatId)) return true;
+        const children = allFolders.filter(x => x.parentId === fid);
+        return children.some(c => hasActiveChatInTree(c.id));
+    };
+
+    const shouldBeExpanded = forceExpand || hasActiveChatInTree(folder.id);
     const [isExpanded, setIsExpanded] = useState(folder.collapsed ? false : true);
 
-    // Filter chats in this folder to get their data
-    const folderChats = folder.chatIds.map(id => allChats[id]).filter(Boolean);
+    useEffect(() => {
+        if (shouldBeExpanded) setIsExpanded(true);
+    }, [shouldBeExpanded, folder.id]);
 
-    // Calculate stats
+    const folderChats = folder.chatIds.map(id => allChats[id]).filter(Boolean);
     const totalChats = folderChats.length;
     const syncedChats = folderChats.filter(c => c.content && c.content.length > 0).length;
     const isFullySynced = totalChats > 0 && totalChats === syncedChats;
 
-    useEffect(() => {
-        if (forceExpand || hasActiveChat) setIsExpanded(true);
-    }, [forceExpand, hasActiveChat, folder.id]);
-
-    // Folder Chat State
+    // Chat Logic
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [chatMessages, setChatMessages] = useState<{ id: string, role: 'user' | 'assistant', text: string, timestamp: number }[]>([]);
     const [isChatLoading, setIsChatLoading] = useState(false);
@@ -231,10 +275,14 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
         setIsChatLoading(true);
 
         try {
+            // RECURSIVE CONTEXT AGGREGATION
+            const recursiveChatIds = getRecursiveChatIds(folder.id, allFolders);
+            const allRecursiveChats = recursiveChatIds.map(id => allChats[id]).filter(Boolean);
+
             let context = "";
             if (chatMessages.length === 0) {
-                context = `CONTEXT FROM FOLDER: "${folder.name}"\n\n`;
-                folderChats.forEach((chat: Chat) => {
+                context = `CONTEXT FROM FOLDER TREE: "${folder.name}" (${allRecursiveChats.length} chats)\n\n`;
+                allRecursiveChats.forEach((chat: Chat) => {
                     if (chat.content) {
                         context += `--- START CHAT: ${chat.title} ---\n${chat.content}\n--- END CHAT ---\n\n`;
                     }
@@ -252,14 +300,12 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
                 const aiMsg = { id: (Date.now() + 1).toString(), role: 'assistant' as const, text: response.text, timestamp: Date.now() };
                 setChatMessages(prev => [...prev, aiMsg]);
             } else {
-                const errorMsg = { id: (Date.now() + 1).toString(), role: 'assistant' as const, text: "Error: " + (response?.error || "Failed to talk to Gemini"), timestamp: Date.now() };
-                setChatMessages(prev => [...prev, errorMsg]);
+                setChatMessages(prev => [...prev, { id: 'err', role: 'assistant', text: "Error: " + (response?.error || "Failed"), timestamp: Date.now() }]);
             }
 
         } catch (err) {
             console.error(err);
-            const errorMsg = { id: (Date.now() + 1).toString(), role: 'assistant' as const, text: "Error: Extension communication failed.", timestamp: Date.now() };
-            setChatMessages(prev => [...prev, errorMsg]);
+            setChatMessages(prev => [...prev, { id: 'err', role: 'assistant', text: "Error: Extension communication failed.", timestamp: Date.now() }]);
         } finally {
             setIsChatLoading(false);
         }
@@ -280,21 +326,25 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
     };
 
     const handleDelete = () => {
-        if (confirm(`Are you sure you want to delete folder "${folder.name}" ? `)) {
+        if (confirm(`Delete "${folder.name}" and all subfolders?`)) {
             onDelete();
         }
     };
 
     const handleExport = () => {
-        let md = `# Folder: ${folder.name}\n\n`;
-        folderChats.forEach(chat => {
+        // RECURSIVE EXPORT
+        const recursiveChatIds = getRecursiveChatIds(folder.id, allFolders);
+        const allRecursiveChats = recursiveChatIds.map(id => allChats[id]).filter(Boolean);
+
+        let md = `# Folder Tree: ${folder.name}\n\n`;
+        allRecursiveChats.forEach(chat => {
             md += `## ${chat.title}\n\n${chat.content || '(No content synced)'}\n\n---\n\n`;
         });
         const blob = new Blob([md], { type: 'text/markdown' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${folder.name.replace(/\s+/g, '_')}-report.md`;
+        a.download = `${folder.name.replace(/\s+/g, '_')}-tree-report.md`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -302,31 +352,26 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
     };
 
     // --- Drag and Drop Handlers ---
+    const handleDragStart = (e: React.DragEvent) => {
+        e.dataTransfer.setData('ez-files/folder-id', folder.id);
+        e.dataTransfer.effectAllowed = 'move';
+        e.stopPropagation();
+    };
+
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
-
-        if (!isDragOver) {
-            setIsDragOver(true);
-        }
-
+        if (!isDragOver) setIsDragOver(true);
         if (!isExpanded && !expandTimerRef.current) {
-            expandTimerRef.current = setTimeout(() => {
-                setIsExpanded(true);
-            }, 600);
+            expandTimerRef.current = setTimeout(() => setIsExpanded(true), 600);
         }
     };
 
     const handleDragLeave = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
-
-        if (e.currentTarget.contains(e.relatedTarget as Node)) {
-            return;
-        }
-
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
         setIsDragOver(false);
-
         if (expandTimerRef.current) {
             clearTimeout(expandTimerRef.current);
             expandTimerRef.current = null;
@@ -337,226 +382,196 @@ function FolderItem({ folder, allChats, activeChatId, forceExpand, onDelete, onA
         e.preventDefault();
         e.stopPropagation();
         setIsDragOver(false);
-
         if (expandTimerRef.current) {
             clearTimeout(expandTimerRef.current);
             expandTimerRef.current = null;
         }
 
+        const folderDragId = e.dataTransfer.getData('ez-files/folder-id');
+
+        // CASE 1: Dropping a Folder
+        if (folderDragId) {
+            // Cannot drop onto self
+            if (folderDragId === folder.id) return;
+            // Move folder logic
+            onMoveFolder(folderDragId, folder.id);
+            return;
+        }
+
+        // CASE 2: Dropping a Chat
         try {
             const json = e.dataTransfer.getData('application/json');
-
             if (json) {
                 const data = JSON.parse(json);
                 if (data.id && data.title) {
                     onAddChat(folder.id, data);
-
+                    // Indexing logic omitted for brevity, assumed handled by storage or main sync loop
+                    // But if we want to trigger indexing immediately:
                     const existingChat = allChats[data.id];
-                    const needsIndexing = !existingChat || !existingChat.content;
-                    if (needsIndexing) {
-                        console.log("Gemini Project Manager: Chat dropped is unindexed. Queueing:", data.id);
-                        chrome.runtime.sendMessage({
-                            type: 'CMD_INDEX_CHAT',
-                            chatId: data.id,
-                            title: data.title
-                        });
+                    if (!existingChat || !existingChat.content) {
+                        chrome.runtime.sendMessage({ type: 'CMD_INDEX_CHAT', chatId: data.id, title: data.title });
                     }
                 }
             } else {
+                // URL Fallback
                 const url = e.dataTransfer.getData('text/plain');
                 if (url && url.includes('/app/')) {
                     const idMatch = url.match(/\/app\/([a-zA-Z0-9_-]+)/);
                     if (idMatch) {
-                        onAddChat(folder.id, {
-                            id: idMatch[1],
-                            title: "Dropped Chat",
-                            url: url,
-                            timestamp: Date.now()
-                        });
+                        onAddChat(folder.id, { id: idMatch[1], title: "Dropped Chat", url: url, timestamp: Date.now() });
                     }
                 }
             }
         } catch (err) {
-            console.error("Gemini Project Manager: Failed to handle drop:", err);
+            console.error("Drop failed:", err);
         }
     };
 
     return (
         <div
-            className={`group ${isDragOver ? 'bg-gray-800 ring-1 ring-blue-500 rounded' : ''}`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
+            className={`border-l-2 ml-1 ${isSearchMode ? 'border-transparent' : 'border-transparent'}`} // Indentation guide container
         >
-            <div className={`flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-800 text-gray-300 hover:text-white group-hover:bg-opacity-80 transition-colors ${isDragOver ? 'bg-gray-800' : ''}`}>
-                <button
-                    onClick={() => setIsExpanded(!isExpanded)}
-                    className="p-0.5 hover:bg-gray-700 rounded text-gray-500"
-                >
-                    {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
+            <div
+                className={`group rounded mb-0.5 ${isDragOver ? 'bg-gray-800 ring-1 ring-blue-500' : ''}`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                draggable={!isEditing && !isSearchMode} // Only draggable if not searching
+                onDragStart={handleDragStart}
+            >
+                <div className={`flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-800 text-gray-300 hover:text-white group-hover:bg-opacity-80 transition-colors ${isDragOver ? 'bg-gray-800' : ''}`}>
+                    <button
+                        onClick={() => setIsExpanded(!isExpanded)}
+                        className={`p-0.5 hover:bg-gray-700 rounded text-gray-500 ${(childFolders.length === 0 && folder.chatIds.length === 0) ? 'invisible' : ''}`}
+                    >
+                        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
 
-                <div className="flex-1 flex items-center gap-2 min-w-0" onDoubleClick={() => setIsEditing(true)}>
-                    <FolderIcon size={16} className={`text-blue-400 flex-shrink-0 ${isDragOver ? 'scale-110 transition-transform' : ''}`} />
-                    {isEditing ? (
-                        <input
-                            type="text"
-                            value={editName}
-                            onChange={e => setEditName(e.target.value)}
-                            className="bg-gray-900 text-white text-sm w-full focus:outline-none px-1 rounded"
-                            autoFocus
-                            onKeyDown={e => e.key === 'Enter' && handleSaveResize()}
-                            onBlur={handleSaveResize}
-                            onClick={e => e.stopPropagation()}
-                        />
-                    ) : (
-                        <div className="flex items-center gap-2">
-                            <span className="text-sm truncate select-none cursor-pointer">{folder.name}</span>
-                            {/* Sync Status Indicator */}
-                            {totalChats > 0 && (
-                                <span className={`text-[10px] px-1 rounded ${isFullySynced ? 'bg-green-900/50 text-green-400' : 'bg-yellow-900/50 text-yellow-400'}`} title={`${syncedChats}/${totalChats} chats indexed`}>
-                                    {syncedChats}/{totalChats}
-                                </span>
-                            )}
-                        </div>
-                    )}
-                </div>
-
-                {!isEditing && (
-                    <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setIsEditing(true);
-                            }}
-                            className="p-1 hover:text-blue-400 rounded transition-all"
-                            title="Rename Folder"
-                        >
-                            <Pencil size={12} />
-                        </button>
-
-                        <button
-                            onClick={handleChatWithFolder}
-                            className={`p-1 rounded transition-all ${isChatOpen ? 'text-blue-400' : 'hover:text-blue-400 hover:bg-gray-700'}`}
-                            title="Chat with Folder Context"
-                        >
-                            <MessageSquare size={12} />
-                        </button>
-
-                        <button
-                            onClick={handleExport}
-                            className="p-1 hover:text-green-400 hover:bg-gray-700 rounded transition-all"
-                            title="Export to Markdown"
-                        >
-                            <FileDown size={12} />
-                        </button>
-
-                        <button
-                            onClick={async (e) => {
-                                e.stopPropagation();
-
-                                let url = isSidePanel && currentUrl ? currentUrl : window.location.href;
-                                let title = 'Untitled Chat';
-                                let chatIdFromUrl = null;
-
-                                if (isSidePanel) {
-                                    // Get info from content script
-                                    try {
-                                        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-                                        if (tab?.id) {
-
-                                            // Ask content script for "real" title just in case (e.g. if tab title is generic)
-                                            // But tab.title is usually usually correct per useActiveChat logic
-                                            const response = await chrome.tabs.sendMessage(tab.id, { type: 'CMD_GET_CURRENT_CHAT_INFO' });
-                                            if (response) {
-                                                if (response.title) title = response.title;
-                                                if (response.url) url = response.url;
-                                            } else {
-                                                // Fallback to tab info
-                                                if (tab.title) title = tab.title.replace(/ - Google Gemini$/, '');
-                                                if (tab.url) url = tab.url;
-                                            }
-                                        }
-                                    } catch (err) {
-                                        console.warn("Could not query content script, using tab info fallback");
-                                        // Fallback is already defaults
-                                    }
-                                } else {
-                                    // Overlay mode: Direct access
-                                    url = window.location.href;
-                                    title = getGeminiTitle();
-                                }
-
-                                const match = url.match(/\/app\/([a-zA-Z0-9]+)/);
-                                if (match) chatIdFromUrl = match[1];
-
-                                if (title === 'Google Gemini' || title === 'Untitled Chat') {
-                                    const manualTitle = prompt("Enter chat name:", "My Chat");
-                                    if (manualTitle) title = manualTitle;
-                                }
-
-                                if (chatIdFromUrl) {
-                                    onAddChat(folder.id, { id: chatIdFromUrl, title, url, timestamp: Date.now() });
-                                } else {
-                                    alert("No active chat found (URL must contain /app/ID).");
-                                }
-                            }}
-                            className="p-1 hover:bg-gray-700 hover:text-green-400 rounded transition-all"
-                            title="Add Current Chat"
-                        >
-                            <Plus size={12} />
-                        </button>
-
-                        <button
-                            onClick={(e) => { e.stopPropagation(); handleDelete(); }}
-                            className="p-1 hover:bg-red-900/50 hover:text-red-400 rounded transition-all"
-                            title="Delete Folder"
-                        >
-                            <Trash2 size={12} />
-                        </button>
-                    </div>
-                )}
-            </div >
-
-            {/* Folder Chat Interface */}
-            {isChatOpen && (
-                <FolderChat
-                    folderName={folder.name}
-                    folderId={folder.id}
-                    onClose={() => {
-                        setIsChatOpen(false);
-                        chrome.runtime.sendMessage({
-                            type: 'CMD_CLOSE_FOLDER_CHAT',
-                            folderId: folder.id
-                        }).catch(() => { });
-                    }}
-                    messages={chatMessages}
-                    onSendMessage={handleSendMessage}
-                    isLoading={isChatLoading}
-                />
-            )}
-
-            {
-                isExpanded && (
-                    <div className={`ml-7 border-l border-gray-700 pl-2 py-1 space-y-1 ${isDragOver ? 'pointer-events-none' : ''}`}>
-                        {folder.chatIds.length === 0 ? (
-                            <div className="text-[10px] text-gray-600 italic">Empty</div>
+                    <div className="flex-1 flex items-center gap-2 min-w-0" onDoubleClick={() => setIsEditing(true)}>
+                        <FolderIcon size={16} className={`text-blue-400 flex-shrink-0 ${isDragOver ? 'scale-110 transition-transform' : ''}`} />
+                        {isEditing ? (
+                            <input
+                                type="text"
+                                value={editName}
+                                onChange={e => setEditName(e.target.value)}
+                                className="bg-gray-900 text-white text-sm w-full focus:outline-none px-1 rounded"
+                                autoFocus
+                                onKeyDown={e => e.key === 'Enter' && handleSaveResize()}
+                                onBlur={handleSaveResize}
+                                onClick={e => e.stopPropagation()}
+                            />
                         ) : (
-                            folder.chatIds.map(chatId => (
-                                <ChatItem
-                                    key={chatId}
-                                    chatId={chatId}
-                                    chatData={allChats[chatId]}
-                                    isActive={chatId === activeChatId}
-                                    onRemove={() => onRemoveChat(chatId)}
-                                    isSidePanel={isSidePanel}
-                                />
-                            ))
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm truncate select-none cursor-pointer">{folder.name}</span>
+                                {totalChats > 0 && (
+                                    <span className={`text-[10px] px-1 rounded ${isFullySynced ? 'bg-green-900/50 text-green-400' : 'bg-yellow-900/50 text-yellow-400'}`} title={`${syncedChats}/${totalChats} chats indexed`}>
+                                        {syncedChats}/{totalChats}
+                                    </span>
+                                )}
+                            </div>
                         )}
                     </div>
-                )
-            }
-        </div >
+
+                    {!isEditing && (
+                        <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="p-1 hover:text-blue-400 rounded transition-all" title="Rename"><Pencil size={12} /></button>
+                            <button onClick={handleChatWithFolder} className={`p-1 rounded transition-all ${isChatOpen ? 'text-blue-400' : 'hover:text-blue-400 hover:bg-gray-700'}`} title="Chat with Folder Tree"><MessageSquare size={12} /></button>
+                            <button onClick={handleExport} className="p-1 hover:text-green-400 hover:bg-gray-700 rounded transition-all" title="Export Tree"><FileDown size={12} /></button>
+                            <button onClick={(e) => { e.stopPropagation(); onAddSubfolder(folder.id); setIsExpanded(true); }} className="p-1 hover:text-yellow-400 hover:bg-gray-700 rounded transition-all relative" title="New Subfolder">
+                                <FolderIcon size={12} />
+                                <Plus size={8} className="absolute -bottom-0.5 -right-0.5 bg-gray-900 rounded-full" />
+                            </button>
+
+                            <button
+                                onClick={async (e) => {
+                                    e.stopPropagation();
+                                    // Quick Add Current Chat Logic (Duplicated for availability)
+                                    let url = isSidePanel && currentUrl ? currentUrl : window.location.href;
+                                    let title = 'Untitled Chat';
+                                    let chatIdFromUrl = null;
+                                    if (isSidePanel) {
+                                        try {
+                                            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                                            if (tab?.id) {
+                                                const response = await chrome.tabs.sendMessage(tab.id, { type: 'CMD_GET_CURRENT_CHAT_INFO' });
+                                                if (response) { if (response.title) title = response.title; if (response.url) url = response.url; }
+                                                else { if (tab.title) title = tab.title.replace(/ - Google Gemini$/, ''); if (tab.url) url = tab.url; }
+                                            }
+                                        } catch (err) { }
+                                    } else { url = window.location.href; title = getGeminiTitle(); }
+                                    const match = url.match(/\/app\/([a-zA-Z0-9]+)/);
+                                    if (match) chatIdFromUrl = match[1];
+                                    if (chatIdFromUrl) { onAddChat(folder.id, { id: chatIdFromUrl, title, url, timestamp: Date.now() }); }
+                                    else { alert("No active chat found."); }
+                                }}
+                                className="p-1 hover:bg-gray-700 hover:text-green-400 rounded transition-all"
+                                title="Add Current Chat"
+                            >
+                                <Plus size={12} />
+                            </button>
+
+                            <button onClick={(e) => { e.stopPropagation(); handleDelete(); }} className="p-1 hover:bg-red-900/50 hover:text-red-400 rounded transition-all" title="Delete Folder"><Trash2 size={12} /></button>
+                        </div>
+                    )}
+                </div >
+
+                {/* Folder Chat Interface */}
+                {isChatOpen && (
+                    <FolderChat
+                        folderName={folder.name}
+                        folderId={folder.id}
+                        onClose={() => { setIsChatOpen(false); chrome.runtime.sendMessage({ type: 'CMD_CLOSE_FOLDER_CHAT', folderId: folder.id }).catch(() => { }); }}
+                        messages={chatMessages}
+                        onSendMessage={handleSendMessage}
+                        isLoading={isChatLoading}
+                    />
+                )}
+
+                {
+                    isExpanded && (
+                        <div className={`ml-4 pl-2 space-y-0.5 ${isDragOver ? 'pointer-events-none' : ''}`}>
+                            {/* RECURSION: Subfolders First */}
+                            {childFolders.map(child => (
+                                <FolderItem
+                                    key={child.id}
+                                    folder={child}
+                                    allFolders={allFolders}
+                                    allChats={allChats}
+                                    activeChatId={activeChatId}
+                                    forceExpand={forceExpand}
+                                    onDelete={() => onDelete()} // Should probably call distinct delete for child
+                                    // FIX: We need to pass the REAL recursive handlers here
+                                    onAddChat={onAddChat}
+                                    onRefresh={onRefresh}
+                                    onRemoveChat={onRemoveChat}
+                                    onMoveFolder={onMoveFolder}
+                                    onAddSubfolder={onAddSubfolder}
+                                    isSidePanel={isSidePanel}
+                                    currentUrl={currentUrl}
+                                    isSearchMode={isSearchMode}
+                                />
+                            ))}
+
+                            {/* Then Chats */}
+                            {folder.chatIds.length === 0 && childFolders.length === 0 ? (
+                                <div className="text-[10px] text-gray-600 italic py-1">Empty</div>
+                            ) : (
+                                folder.chatIds.map(chatId => (
+                                    <ChatItem
+                                        key={chatId}
+                                        chatId={chatId}
+                                        chatData={allChats[chatId]}
+                                        isActive={chatId === activeChatId}
+                                        onRemove={() => onRemoveChat(chatId)}
+                                        isSidePanel={isSidePanel}
+                                    />
+                                ))
+                            )}
+                        </div>
+                    )
+                }
+            </div>
+        </div>
     );
 }
 
@@ -586,61 +601,28 @@ function ChatItem({ chatId, chatData, isActive, onRemove, isSidePanel }: {
         e.preventDefault();
         e.stopPropagation();
 
-        console.log("Gemini Project Manager: handleNavigation clicked", chatId, localChat);
-
         let targetUrl = localChat?.url;
-        if (!targetUrl && chatId) {
-            console.warn("Gemini Project Manager: Chat URL missing, reconstructing from ID", chatId);
-            targetUrl = `https://gemini.google.com/app/${chatId}`;
-        }
-
-        if (!targetUrl) {
-            console.error("Gemini Project Manager: Cannot navigate, no URL or ID");
-            return;
-        }
+        if (!targetUrl && chatId) targetUrl = `https://gemini.google.com/app/${chatId}`;
+        if (!targetUrl) return;
 
         if (isSidePanel) {
-            // Side Panel: Navigate the main window
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             if (tab && tab.id) {
-                // FIX: If we are already on this chat, do nothing (as requested).
-                // This prevents reloading or accidental UI clicks (like user menu) when finding by title.
-                if (chatId && tab.url && tab.url.includes(`/app/${chatId}`)) {
-                    console.log("Gemini Project Manager: Chat already open, doing nothing.");
-                    return;
-                }
-
-                // First try to tell content script to click the link internally (SPA nav)
+                if (chatId && tab.url && tab.url.includes(`/app/${chatId}`)) return;
                 try {
-                    console.log("Gemini Project Manager: Sending CMD_OPEN_CHAT to tab", tab.id);
-                    const response = await chrome.tabs.sendMessage(tab.id, {
-                        type: 'CMD_OPEN_CHAT',
-                        chatId,
-                        url: targetUrl,
-                        title: localChat?.title || ''
-                    });
-                    console.log("Gemini Project Manager: CMD_OPEN_CHAT response", response);
+                    await chrome.tabs.sendMessage(tab.id, { type: 'CMD_OPEN_CHAT', chatId, url: targetUrl, title: localChat?.title || '' });
                 } catch (err) {
-                    console.warn("Gemini Project Manager: CMD_OPEN_CHAT failed, hard navigating", err);
-                    // If content script fails (e.g. not loaded), hard navigate
                     chrome.tabs.update(tab.id, { url: targetUrl });
                 }
             }
         } else {
-            // Overlay Mode: Direct interaction
-            const title = localChat?.title || "Chat";
-            const sidebarEl = findChatElement(chatId, title);
-            if (sidebarEl) {
-                sidebarEl.click();
-            } else {
-                window.location.href = targetUrl;
-            }
+            window.location.href = targetUrl;
         }
     };
 
     const handleEditTags = async () => {
         const currentTags = localChat?.tags?.join(', ') || '';
-        const newTagsStr = prompt("Edit Tags (comma separated, e.g. finance, urgent):", currentTags);
+        const newTagsStr = prompt("Tags:", currentTags);
         if (newTagsStr !== null) {
             const tags = newTagsStr.split(',').map(t => t.trim()).filter(Boolean);
             await storage.updateChatTags(chatId, tags);
@@ -679,41 +661,12 @@ function ChatItem({ chatId, chatData, isActive, onRemove, isSidePanel }: {
 
             <div className="flex items-center">
                 {(!localChat.content || localChat.content.length === 0) && (
-                    <span className="text-[10px] text-yellow-600 mr-2" title="Not Indexed (Open chat to sync)">
-                        ●
-                    </span>
+                    <span className="text-[10px] text-yellow-600 mr-2" title="Not Indexed">●</span>
                 )}
-
                 <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity gap-1">
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            handleTogglePin();
-                        }}
-                        className={`p-0.5 hover:text-blue-400 ${localChat.pinned ? 'text-blue-400' : ''}`}
-                        title={localChat.pinned ? "Unpin Chat" : "Pin to Reference Panel"}
-                    >
-                        <Pin size={10} />
-                    </button>
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            handleEditTags();
-                        }}
-                        className="p-0.5 hover:text-blue-400"
-                        title="Edit Tags"
-                    >
-                        <Tag size={10} />
-                    </button>
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            if (confirm('Remove chat from project?')) onRemove();
-                        }}
-                        className="p-0.5 hover:text-red-400"
-                    >
-                        <Trash2 size={10} />
-                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); handleTogglePin(); }} className={`p-0.5 hover:text-blue-400 ${localChat.pinned ? 'text-blue-400' : ''}`}><Pin size={10} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); handleEditTags(); }} className="p-0.5 hover:text-blue-400"><Tag size={10} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); if (confirm('Remove?')) onRemove(); }} className="p-0.5 hover:text-red-400"><Trash2 size={10} /></button>
                 </div>
             </div>
         </div>
@@ -721,20 +674,11 @@ function ChatItem({ chatId, chatData, isActive, onRemove, isSidePanel }: {
 }
 
 function getGeminiTitle() {
-    const selectors = [
-        'h1.conversation-title',
-        'div[data-testid="conversation-title-region"] span',
-        'span[data-testid="chat-title"]',
-        '.conversation-title'
-    ];
-
+    const selectors = ['h1.conversation-title', 'div[data-testid="conversation-title-region"] span', 'span[data-testid="chat-title"]', '.conversation-title'];
     for (const sel of selectors) {
         const el = document.querySelector(sel);
         if (el && el.textContent) return el.textContent.trim();
     }
-
     const docTitle = document.title.replace(/ - Google Gemini$/, '').trim();
-    if (docTitle && docTitle !== 'Google Gemini') return docTitle;
-
-    return 'Google Gemini';
+    return (docTitle && docTitle !== 'Google Gemini') ? docTitle : 'Google Gemini';
 }

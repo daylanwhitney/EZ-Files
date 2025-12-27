@@ -262,13 +262,13 @@ export const storage = {
     },
     // ---------------------------------------
 
-    addFolder: async (name: string, workspaceId: string) => {
+    addFolder: async (name: string, workspaceId: string, parentId: string | null = null) => {
         const data = await storage.get();
         const newFolder: Folder = {
             id: crypto.randomUUID(),
             workspaceId, // Link to workspace
             name,
-            parentId: null,
+            parentId, // <--- Link to parent
             chatIds: [],
             collapsed: false,
         };
@@ -277,11 +277,48 @@ export const storage = {
         return newFolder;
     },
 
-    deleteFolder: async (folderId: string) => {
-        // Recursive delete logic would go here (or just move children to root)
-        // For now, simple delete
+    // NEW: Handle Drag & Drop nesting
+    moveFolder: async (folderId: string, newParentId: string | null) => {
         const data = await storage.get();
-        const updatedFolders = data.folders.filter(f => f.id !== folderId);
+        // Validation: Prevent circular dependency (folder cannot be its own child)
+        if (folderId === newParentId) return;
+
+        // Validation: Prevent moving a folder into its own descendant
+        const isDescendant = (parentId: string | null, targetId: string): boolean => {
+            if (!parentId) return false;
+            if (parentId === targetId) return true;
+            const parent = data.folders.find(f => f.id === parentId);
+            return parent ? isDescendant(parent.parentId, targetId) : false;
+        };
+
+        if (newParentId && isDescendant(newParentId, folderId)) {
+            console.warn("Gemini Project Manager: Cannot move folder into its own descendant");
+            return;
+        }
+
+        const updatedFolders = data.folders.map(f =>
+            f.id === folderId ? { ...f, parentId: newParentId } : f
+        );
+        await storage.save({ folders: updatedFolders });
+    },
+
+    deleteFolder: async (folderId: string) => {
+        const data = await storage.get();
+
+        // Helper to find all descendant IDs
+        const getDescendants = (pid: string, list: Folder[]): string[] => {
+            const children = list.filter(f => f.parentId === pid);
+            let ids = children.map(c => c.id);
+            children.forEach(child => {
+                ids = [...ids, ...getDescendants(child.id, list)];
+            });
+            return ids;
+        };
+
+        const idsToDelete = [folderId, ...getDescendants(folderId, data.folders)];
+
+        // Remove all identified folders
+        const updatedFolders = data.folders.filter(f => !idsToDelete.includes(f.id));
         await storage.save({ folders: updatedFolders });
     },
 

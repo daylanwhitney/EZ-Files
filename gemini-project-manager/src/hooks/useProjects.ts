@@ -30,12 +30,17 @@ export function useProjects() {
         return () => chrome.storage.onChanged.removeListener(listener);
     }, []);
 
-    const addFolder = async (name: string) => {
+    const addFolder = async (name: string, parentId: string | null = null) => {
         // Use current active ID
         if (activeWorkspaceId) {
-            await storage.addFolder(name, activeWorkspaceId);
+            await storage.addFolder(name, activeWorkspaceId, parentId);
             refresh();
         }
+    };
+
+    const moveFolder = async (folderId: string, newParentId: string | null) => {
+        await storage.moveFolder(folderId, newParentId);
+        refresh();
     };
 
     const deleteFolder = async (id: string) => {
@@ -78,6 +83,7 @@ export function useProjects() {
         activeWorkspaceId,
         loading,
         addFolder,
+        moveFolder,
         deleteFolder,
         addChatToFolder,
         refresh,
