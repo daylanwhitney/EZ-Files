@@ -395,6 +395,19 @@ export const storage = {
         await storage.save({ chats: { ...data.chats, [chatId]: updatedChat } });
     },
 
+    clearAllPins: async () => {
+        const data = await storage.get();
+        const updatedChats = { ...data.chats };
+
+        for (const chatId of Object.keys(updatedChats)) {
+            if (updatedChats[chatId].pinned) {
+                updatedChats[chatId] = { ...updatedChats[chatId], pinned: false };
+            }
+        }
+
+        await storage.save({ chats: updatedChats });
+    },
+
     // --- FEATURE 5: WORKSPACE DEFAULTS ---
     updateWorkspaceDefaultPrompt: async (workspaceId: string, prompt: string) => {
         const data = await storage.get();

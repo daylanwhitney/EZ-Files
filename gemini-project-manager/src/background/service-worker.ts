@@ -9,6 +9,55 @@ const chatService = new FolderChatService();
 // Track side panel open state per window
 const panelOpenState: Map<number, boolean> = new Map();
 
+// Track reference panel popup window
+let referencePanelWindowId: number | null = null;
+
+// Function to open/focus reference panel
+async function openReferencePanel() {
+    // If window exists, focus it
+    if (referencePanelWindowId !== null) {
+        try {
+            const existingWindow = await chrome.windows.get(referencePanelWindowId);
+            if (existingWindow) {
+                await chrome.windows.update(referencePanelWindowId, { focused: true });
+                console.log("Service Worker: Focused existing reference panel window");
+                return;
+            }
+        } catch (err) {
+            // Window doesn't exist anymore, reset
+            referencePanelWindowId = null;
+        }
+    }
+
+    // Create new popup window
+    try {
+        const newWindow = await chrome.windows.create({
+            url: 'referencepanel.html',
+            type: 'popup',
+            width: 450,
+            height: 650,
+            // Note: left/top omitted to let Chrome position it naturally
+            // (screen object not available in service workers)
+            focused: true
+        });
+
+        if (newWindow?.id) {
+            referencePanelWindowId = newWindow.id;
+            console.log("Service Worker: Created reference panel window", referencePanelWindowId);
+        }
+    } catch (err) {
+        console.error("Service Worker: Failed to create reference panel window", err);
+    }
+}
+
+// Listen for reference panel window close
+chrome.windows.onRemoved.addListener((windowId) => {
+    if (windowId === referencePanelWindowId) {
+        referencePanelWindowId = null;
+        console.log("Service Worker: Reference panel window closed");
+    }
+});
+
 // Helper to check if panel is open for a window
 function isPanelOpen(windowId: number): boolean {
     return panelOpenState.get(windowId) || false;
@@ -101,6 +150,12 @@ chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
                 console.error("Service Worker: Failed to open side panel", err);
             });
         }
+        return false;
+    }
+
+    // Handle CMD_OPEN_REFERENCE_PANEL - opens as a separate popup window
+    if (message.type === 'CMD_OPEN_REFERENCE_PANEL') {
+        openReferencePanel();
         return false;
     }
 

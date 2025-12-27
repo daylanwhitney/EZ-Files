@@ -1,4 +1,4 @@
-// React and createRoot removed as no longer rendering UI
+import { storage } from '../utils/storage';
 import { scrapeChatContent, findChatElement, injectPrompt } from '../utils/dom';
 
 console.log("Gemini Project Manager: Content Script Loaded");
@@ -145,10 +145,21 @@ function createProjectsButton(referenceElement?: HTMLElement): HTMLElement {
     button.addEventListener('click', async (e) => {
         e.preventDefault();
         e.stopPropagation();
+
+        if (!isExtensionContextValid()) {
+            console.log("Gemini Project Manager: Extension context invalidated, cannot open side panel. Please reload the page.");
+            return;
+        }
+
         try {
             await chrome.runtime.sendMessage({ type: 'CMD_OPEN_SIDE_PANEL' });
-        } catch (err) {
-            console.error("Gemini Project Manager: Failed to open Side Panel", err);
+        } catch (err: any) {
+            // Silently handle context invalidation errors
+            if (err?.message?.includes('Extension context invalidated')) {
+                console.log("Gemini Project Manager: Extension was reloaded. Please refresh the page.");
+            } else {
+                console.error("Gemini Project Manager: Failed to open Side Panel", err);
+            }
         }
     });
 
@@ -478,7 +489,8 @@ function makeChatsDraggable() {
                     const titleHash = generateTitleHash(title);
                     id = `chat_${titleHash}`;
                     url = `${window.location.origin}/app/${id}`;
-                    console.warn("Gemini Project Manager: Could not find real chat ID. Using HASH fallback:", id, "for title:", title);
+                    // This is expected behavior for chats without real IDs - they'll be discovered when indexed
+                    console.log("Gemini Project Manager: Using hash ID for chat:", title.substring(0, 30));
                 }
 
                 console.log(`Gemini Project Manager: Drag Data - Title: "${title}", URL: ${url}, ID: ${id}`);
@@ -581,7 +593,7 @@ setTimeout(() => {
 
 // --- Auto-Archivist Logic ---
 
-import { storage } from '../utils/storage';
+
 
 
 let scrapeDebounce: any = null;
@@ -857,8 +869,8 @@ function setupSidePanelListeners() {
         }
 
         if (message.type === 'CMD_OPEN_CHAT') {
-            const { chatId, url } = message;
-            const el = findChatElement(chatId, '');
+            const { chatId, url, title } = message;
+            const el = findChatElement(chatId, title || '');
             if (el) {
                 el.click();
             } else {
@@ -1792,3 +1804,4 @@ function setupSnippetQuickInject() {
     });
 }
 
+// Note: Floating Reference Panel is now handled as a popup window via service worker

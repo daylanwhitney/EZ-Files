@@ -24,15 +24,28 @@ export default function ProjectList({ isSidePanel = false, currentUrl }: Project
     const [isCreating, setIsCreating] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
 
-    // --- Active Chat Detection (Title-Based) ---
+    // --- Active Chat Detection ---
+    // 1. Try to get ID from URL (Most Reliable)
+    let urlChatId: string | null = null;
+    if (currentUrl) {
+        const match = currentUrl.match(/\/app\/([a-zA-Z0-9_-]+)/);
+        if (match) urlChatId = match[1];
+    }
+
+    // 2. Fallback to Title-Based Detection (if URL ID not found or checking title match)
     const { activeTitle } = useActiveChat(isSidePanel);
 
-    // Helper to normalize titles for comparison
-    const normalize = (s: string) => s.toLowerCase().trim().replace(/[^\w\s]/g, '');
+    // Find the chat ID that matches
+    let activeChatId = urlChatId;
 
-    // Find the chat ID that matches the active title
-    const activeChatId = activeTitle
-        ? Object.keys(chats).find(key => {
+    // If we have a URL ID, verify it exists in our chats to confirm (optional, but good for safety)
+    // Actually, if the URL ID matches a chat key, we should definitely use it.
+
+    if (!activeChatId && activeTitle) {
+        // Fallback: Fuzzy Name Match
+        const normalize = (s: string) => s.toLowerCase().trim().replace(/[^\w\s]/g, '');
+
+        activeChatId = Object.keys(chats).find(key => {
             const chat = chats[key];
             if (!chat.title) return false;
 
@@ -46,8 +59,8 @@ export default function ProjectList({ isSidePanel = false, currentUrl }: Project
             if (minLen >= 5 && storedNorm.substring(0, minLen) === activeNorm.substring(0, minLen)) return true;
 
             return false;
-        }) || null
-        : null;
+        }) || null;
+    }
 
     const handleCreate = async () => {
         if (!newFolderName.trim()) return;
@@ -573,34 +586,54 @@ function ChatItem({ chatId, chatData, isActive, onRemove, isSidePanel }: {
         e.preventDefault();
         e.stopPropagation();
 
-        if (!localChat || !localChat.url) return;
+        console.log("Gemini Project Manager: handleNavigation clicked", chatId, localChat);
+
+        let targetUrl = localChat?.url;
+        if (!targetUrl && chatId) {
+            console.warn("Gemini Project Manager: Chat URL missing, reconstructing from ID", chatId);
+            targetUrl = `https://gemini.google.com/app/${chatId}`;
+        }
+
+        if (!targetUrl) {
+            console.error("Gemini Project Manager: Cannot navigate, no URL or ID");
+            return;
+        }
 
         if (isSidePanel) {
             // Side Panel: Navigate the main window
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             if (tab && tab.id) {
-                // Check if we are already on this URL (to avoid reload)
-                if (tab.url === localChat.url) return;
+                // FIX: If we are already on this chat, do nothing (as requested).
+                // This prevents reloading or accidental UI clicks (like user menu) when finding by title.
+                if (chatId && tab.url && tab.url.includes(`/app/${chatId}`)) {
+                    console.log("Gemini Project Manager: Chat already open, doing nothing.");
+                    return;
+                }
 
                 // First try to tell content script to click the link internally (SPA nav)
                 try {
-                    await chrome.tabs.sendMessage(tab.id, {
+                    console.log("Gemini Project Manager: Sending CMD_OPEN_CHAT to tab", tab.id);
+                    const response = await chrome.tabs.sendMessage(tab.id, {
                         type: 'CMD_OPEN_CHAT',
                         chatId,
-                        url: localChat.url
+                        url: targetUrl,
+                        title: localChat?.title || ''
                     });
+                    console.log("Gemini Project Manager: CMD_OPEN_CHAT response", response);
                 } catch (err) {
+                    console.warn("Gemini Project Manager: CMD_OPEN_CHAT failed, hard navigating", err);
                     // If content script fails (e.g. not loaded), hard navigate
-                    chrome.tabs.update(tab.id, { url: localChat.url });
+                    chrome.tabs.update(tab.id, { url: targetUrl });
                 }
             }
         } else {
             // Overlay Mode: Direct interaction
-            const sidebarEl = findChatElement(chatId, localChat.title);
+            const title = localChat?.title || "Chat";
+            const sidebarEl = findChatElement(chatId, title);
             if (sidebarEl) {
                 sidebarEl.click();
             } else {
-                window.location.href = localChat.url;
+                window.location.href = targetUrl;
             }
         }
     };

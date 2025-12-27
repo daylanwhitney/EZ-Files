@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Settings, X, Download, Upload, Trash, ChevronDown, Check, Plus, Layout, Pin } from 'lucide-react';
 import ProjectList from './ProjectList';
 import { SnippetList } from './SnippetList';
-import { ReferencePanel } from './ReferencePanel';
+
 import { storage } from '../utils/storage';
 import { useProjects } from '../hooks/useProjects';
 import { clsx } from 'clsx';
@@ -23,7 +23,7 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
     const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
     const [newWorkspaceName, setNewWorkspaceName] = useState('');
     const [activeTab, setActiveTab] = useState<'projects' | 'snippets'>('projects');
-    const [showReferencePanel, setShowReferencePanel] = useState(false);
+
 
     // Side Panel Context
     const [currentTab, setCurrentTab] = useState<chrome.tabs.Tab | null>(null);
@@ -38,8 +38,7 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
         activeWorkspaceId,
         setActiveWorkspace,
         addWorkspace,
-        deleteWorkspace,
-        chats
+        deleteWorkspace
     } = useProjects();
 
     const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId) || workspaces[0];
@@ -111,7 +110,7 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
             "bg-[#1e1f20] text-gray-200 font-sans flex flex-col pointer-events-auto",
             isSidePanel ? "w-full h-full" : "fixed top-0 right-0 h-screen transition-transform duration-300 z-[9999] border-l border-gray-700 shadow-xl",
             (!isSidePanel && isOpen) ? "translate-x-0" : (!isSidePanel ? "translate-x-full" : ""),
-            (!isSidePanel && showReferencePanel) ? "w-[calc(320px+20rem)] lg:w-[calc(320px+24rem)]" : (isSidePanel ? "" : "w-80")
+            isSidePanel ? "" : "w-80"
         )}>
             {/* Main Sidebar Column */}
             <div className={cn("flex flex-col h-full shrink-0", isSidePanel ? "w-full" : "w-80 border-r border-gray-700")}>
@@ -183,12 +182,12 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
 
                     <div className="flex items-center gap-1">
                         <button
-                            onClick={() => setShowReferencePanel(!showReferencePanel)}
-                            className={cn(
-                                "p-1.5 rounded-md transition-colors",
-                                showReferencePanel ? "bg-blue-900/40 text-blue-400" : "hover:bg-gray-700 text-gray-400"
-                            )}
-                            title="Toggle Reference Panel"
+                            onClick={async () => {
+                                // Open Reference Panel as popup window via service worker
+                                chrome.runtime.sendMessage({ type: 'CMD_OPEN_REFERENCE_PANEL' });
+                            }}
+                            className="p-1.5 rounded-md transition-colors hover:bg-gray-700 text-gray-400"
+                            title="Open Reference Panel"
                         >
                             <Pin size={16} />
                         </button>
@@ -325,15 +324,7 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
                 }
             </div >
 
-            {/* Reference Panel Slide-out */}
-            {
-                showReferencePanel && (
-                    <ReferencePanel
-                        allChats={chats}
-                        onClose={() => setShowReferencePanel(false)}
-                    />
-                )
-            }
+
         </div >
     );
 };
