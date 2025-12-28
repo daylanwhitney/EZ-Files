@@ -47,3 +47,14 @@ export async function callGeminiAPI(
 
     return text.trim();
 }
+
+export async function verifyGeminiApiKey(apiKey: string): Promise<boolean> {
+    try {
+        // Minimal call to check if key works (using a very short prompt)
+        await callGeminiAPI(apiKey, "Hello", "Reflect the input back.");
+        return true;
+    } catch (e) {
+        console.warn("Gemini Verification Failed:", e);
+        return false;
+    }
+}

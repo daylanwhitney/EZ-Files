@@ -18,7 +18,8 @@
         "unlimitedStorage"
     ],
     "host_permissions": [
-        "https://gemini.google.com/*"
+        "https://gemini.google.com/*",
+        "https://api.github.com/*"
     ],
     "background": {
         "service_worker": "src/background/service-worker.ts",

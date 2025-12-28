@@ -7,6 +7,7 @@ const DEFAULT_DATA: StorageData = {
     chats: {},
     snippets: [],
     settings: { theme: 'dark' },
+    recentRepos: [],
 };
 
 // Storage mutex to prevent race conditions
@@ -462,5 +463,36 @@ export const storage = {
 
     setApiKey: async (apiKey: string) => {
         await chrome.storage.local.set({ geminiApiKey: apiKey });
+    },
+
+    getGithubToken: async (): Promise<string | undefined> => {
+        const result = await chrome.storage.local.get('githubToken') as { githubToken?: string };
+        return result.githubToken;
+    },
+
+    setGithubToken: async (token: string): Promise<void> => {
+        await chrome.storage.local.set({ githubToken: token });
+    },
+
+    // --- RECENT REPOS ---
+    getRecentRepos: async (): Promise<string[]> => {
+        const data = await storage.get();
+        return data.recentRepos || [];
+    },
+
+    addRecentRepo: async (repoUrl: string) => {
+        const data = await storage.get();
+        let current = data.recentRepos || [];
+
+        // Remove if exists (to bump to top)
+        current = current.filter(url => url !== repoUrl);
+
+        // Add to front
+        current.unshift(repoUrl);
+
+        // Limit to 10
+        current = current.slice(0, 10);
+
+        await storage.save({ recentRepos: current });
     }
 };

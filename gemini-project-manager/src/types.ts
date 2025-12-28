@@ -44,4 +44,5 @@ export interface StorageData {
     settings: {
         theme: 'dark' | 'light';
     };
+    recentRepos?: string[];       // NEW: Recent GitHub Repo URLs
 }

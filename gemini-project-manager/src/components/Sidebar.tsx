@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, X, Download, Upload, Trash, ChevronDown, Check, Plus, Layout, Pin, Wand2, Edit3, Save } from 'lucide-react';
+import { Settings, X, Download, Upload, Trash, ChevronDown, Check, Plus, Layout, Pin, Wand2, Edit3, Save, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { PROMPT_ENGINEER_SYSTEM } from '../utils/prompts';
-import { callGeminiAPI } from '../utils/gemini-api';
+import { callGeminiAPI, verifyGeminiApiKey } from '../utils/gemini-api';
+import { verifyGithubToken } from '../utils/github';
 import type { Workspace } from '../types';
 import ProjectList from './ProjectList';
-import { SnippetList } from './SnippetList';
+import { PromptsPanel } from './PromptsPanel';
 
 import { storage } from '../utils/storage';
 import { useProjects } from '../hooks/useProjects';
@@ -25,7 +26,7 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
     const [showSettings, setShowSettings] = useState(false);
     const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
     const [newWorkspaceName, setNewWorkspaceName] = useState('');
-    const [activeTab, setActiveTab] = useState<'projects' | 'snippets'>('projects');
+    const [activeTab, setActiveTab] = useState<'projects' | 'prompts'>('projects');
 
     // NEW STATE for Workspace Settings Modal
     const [editingWorkspace, setEditingWorkspace] = useState<Workspace | null>(null);
@@ -34,6 +35,11 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
     const [isEnhancing, setIsEnhancing] = useState(false);
     const [enhancingError, setEnhancingError] = useState<string | null>(null);
     const [apiKey, setApiKey] = useState('');
+    const [githubToken, setGithubToken] = useState('');
+
+    // Verification State
+    const [geminiStatus, setGeminiStatus] = useState<'idle' | 'loading' | 'valid' | 'invalid'>('idle');
+    const [githubStatus, setGithubStatus] = useState<'idle' | 'loading' | 'valid' | 'invalid'>('idle');
 
 
     // Side Panel Context
@@ -97,6 +103,9 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
     useEffect(() => {
         storage.getApiKey().then(key => {
             if (key) setApiKey(key);
+        });
+        storage.getGithubToken().then(token => {
+            if (token) setGithubToken(token);
         });
     }, []);
 
@@ -189,6 +198,20 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
         } finally {
             setIsEnhancing(false);
         }
+    };
+
+    const handleVerifyGemini = async () => {
+        if (!apiKey) return;
+        setGeminiStatus('loading');
+        const isValid = await verifyGeminiApiKey(apiKey);
+        setGeminiStatus(isValid ? 'valid' : 'invalid');
+    };
+
+    const handleVerifyGithub = async () => {
+        if (!githubToken) return;
+        setGithubStatus('loading');
+        const isValid = await verifyGithubToken(githubToken);
+        setGithubStatus(isValid ? 'valid' : 'invalid');
     };
 
     if (!isSidePanel && !isOpen) return null; // Keep logic simple for overlay mode
@@ -308,13 +331,13 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
                         Projects
                     </button>
                     <button
-                        onClick={() => setActiveTab('snippets')}
+                        onClick={() => setActiveTab('prompts')}
                         className={cn(
                             "flex-1 py-2 text-xs font-medium text-center transition-colors border-b-2 hover:bg-gray-800",
-                            activeTab === 'snippets' ? "border-blue-500 text-blue-400" : "border-transparent text-gray-400 hover:text-gray-300"
+                            activeTab === 'prompts' ? "border-blue-500 text-blue-400" : "border-transparent text-gray-400 hover:text-gray-300"
                         )}
                     >
-                        Snippets
+                        Prompts
                     </button>
                 </div>
 
@@ -329,7 +352,7 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
                                     currentUrl={currentTab?.url}
                                 />
                             )}
-                            {activeTab === 'snippets' && <SnippetList />}
+                            {activeTab === 'prompts' && <PromptsPanel />}
                         </div>
                         <div className="p-3 border-t border-gray-700 shrink-0">
                             <button
@@ -420,18 +443,61 @@ const Sidebar = ({ isSidePanel = true }: SidebarProps) => {
 
                         <h2 className="font-semibold text-white">Gemini API</h2>
                         <div className="bg-gray-800 p-3 rounded border border-gray-700 flex flex-col gap-2">
-                            <label className="text-xs text-gray-400">API Key</label>
+                            <div className="flex justify-between items-center">
+                                <label className="text-xs text-gray-400">API Key</label>
+                                {geminiStatus === 'loading' && <Loader2 size={12} className="animate-spin text-blue-400" />}
+                                {geminiStatus === 'valid' && <CheckCircle2 size={14} className="text-green-400" />}
+                                {geminiStatus === 'invalid' && <AlertCircle size={14} className="text-red-400" />}
+                            </div>
                             <p className="text-[10px] text-gray-500">Required for Auto-Enhance. Get yours at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-blue-400 underline">aistudio.google.com</a></p>
-                            <input
-                                type="password"
-                                className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500"
-                                placeholder="AIza..."
-                                value={apiKey}
-                                onChange={(e) => {
-                                    setApiKey(e.target.value);
-                                    storage.setApiKey(e.target.value);
-                                }}
-                            />
+                            <div className="flex gap-2">
+                                <input
+                                    type="password"
+                                    className={`flex-1 bg-gray-900 border rounded px-2 py-1 text-sm focus:outline-none ${geminiStatus === 'invalid' ? 'border-red-500 text-red-100' : 'border-gray-600 focus:border-blue-500'}`}
+                                    placeholder="AIza..."
+                                    value={apiKey}
+                                    onChange={(e) => {
+                                        setApiKey(e.target.value);
+                                        setGeminiStatus('idle'); // Reset on edit
+                                        storage.setApiKey(e.target.value);
+                                    }}
+                                />
+                                <button
+                                    onClick={handleVerifyGemini}
+                                    className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300 transition-colors"
+                                >
+                                    Verify
+                                </button>
+                            </div>
+
+                            <div className="h-px bg-gray-700 my-1"></div>
+
+                            <div className="flex justify-between items-center">
+                                <label className="text-xs text-gray-400">GitHub Personal Access Token</label>
+                                {githubStatus === 'loading' && <Loader2 size={12} className="animate-spin text-blue-400" />}
+                                {githubStatus === 'valid' && <CheckCircle2 size={14} className="text-green-400" />}
+                                {githubStatus === 'invalid' && <AlertCircle size={14} className="text-red-400" />}
+                            </div>
+                            <p className="text-[10px] text-gray-500">Optional. Required for private repositories.</p>
+                            <div className="flex gap-2">
+                                <input
+                                    type="password"
+                                    className={`flex-1 bg-gray-900 border rounded px-2 py-1 text-sm focus:outline-none ${githubStatus === 'invalid' ? 'border-red-500 text-red-100' : 'border-gray-600 focus:border-blue-500'}`}
+                                    placeholder="ghp_..."
+                                    value={githubToken}
+                                    onChange={(e) => {
+                                        setGithubToken(e.target.value);
+                                        setGithubStatus('idle'); // Reset on edit
+                                        storage.setGithubToken(e.target.value);
+                                    }}
+                                />
+                                <button
+                                    onClick={handleVerifyGithub}
+                                    className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300 transition-colors"
+                                >
+                                    Verify
+                                </button>
+                            </div>
                         </div>
 
                         <div className="h-px bg-gray-700 my-2"></div>
